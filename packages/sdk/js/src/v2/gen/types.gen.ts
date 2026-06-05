@@ -2727,6 +2727,101 @@ export type WorkspaceWarpError = {
   }
 }
 
+export type WorkflowArgument = {
+  type?: string
+  default?: unknown
+  description?: string
+}
+
+export type WorkflowMeta = {
+  name: string
+  description?: string
+  phases?: Array<string>
+  arguments?: {
+    [key: string]: WorkflowArgument
+  }
+}
+
+export type WorkflowInfo = {
+  name: string
+  path: string
+  meta: WorkflowMeta
+  valid: boolean
+  error?: string
+}
+
+export type WorkflowApiError = {
+  _tag: "WorkflowApiError"
+  message: string
+  workflow?: string
+}
+
+export type WorkflowDefinition = {
+  name: string
+  path: string
+  meta: WorkflowMeta
+  source?: string
+  temporary?: boolean
+}
+
+export type WorkflowLogEntry = {
+  time: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  phase?: string
+  message: string
+}
+
+export type WorkflowAgentRun = {
+  id: string
+  status: "running" | "completed" | "failed"
+  started_at: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  completed_at?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  phase?: string
+  agent?: string
+  model?: string
+  session_id?: string
+  message_id?: string
+  prompt: string
+  output?: string
+  cost?: number
+  tokens?: {
+    total?: number
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  error?: string
+}
+
+export type WorkflowRun = {
+  id: string
+  session_id?: string
+  workflow: string
+  args?: {
+    [key: string]: unknown
+  }
+  definition?: WorkflowDefinition
+  status: "running" | "completed" | "failed" | "cancelled" | "interrupted"
+  started_at: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  completed_at?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  current_phase?: string
+  logs: Array<WorkflowLogEntry>
+  agents: Array<WorkflowAgentRun>
+  result?: unknown
+  error?: string
+}
+
+export type WorkflowStartPayload = {
+  args?: {
+    [key: string]: unknown
+  }
+  budget?: number
+  permissionSessionID?: string
+}
+
 export type UnauthorizedError = {
   _tag: "UnauthorizedError"
   message: string
@@ -7977,6 +8072,7 @@ export type SessionMessagesResponse = SessionMessagesResponses[keyof SessionMess
 
 export type SessionPromptData = {
   body?: {
+    permissionSessionID?: string
     messageID?: string
     model?: {
       providerID: string
@@ -8324,6 +8420,7 @@ export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSu
 
 export type SessionPromptAsyncData = {
   body?: {
+    permissionSessionID?: string
     messageID?: string
     model?: {
       providerID: string
@@ -9413,6 +9510,182 @@ export type ExperimentalWorkspaceWarpResponses = {
 
 export type ExperimentalWorkspaceWarpResponse =
   ExperimentalWorkspaceWarpResponses[keyof ExperimentalWorkspaceWarpResponses]
+
+export type WorkflowListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow"
+}
+
+export type WorkflowListErrors = {
+  /**
+   * WorkflowApiError | InvalidRequestError
+   */
+  400: WorkflowApiError | InvalidRequestError
+}
+
+export type WorkflowListError = WorkflowListErrors[keyof WorkflowListErrors]
+
+export type WorkflowListResponses = {
+  /**
+   * List of workflows
+   */
+  200: Array<WorkflowInfo>
+}
+
+export type WorkflowListResponse = WorkflowListResponses[keyof WorkflowListResponses]
+
+export type WorkflowRunsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/run"
+}
+
+export type WorkflowRunsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowRunsError = WorkflowRunsErrors[keyof WorkflowRunsErrors]
+
+export type WorkflowRunsResponses = {
+  /**
+   * List of workflow runs
+   */
+  200: Array<WorkflowRun>
+}
+
+export type WorkflowRunsResponse = WorkflowRunsResponses[keyof WorkflowRunsResponses]
+
+export type WorkflowDeleteData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/run/{id}"
+}
+
+export type WorkflowDeleteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowDeleteError = WorkflowDeleteErrors[keyof WorkflowDeleteErrors]
+
+export type WorkflowDeleteResponses = {
+  /**
+   * Workflow run deleted
+   */
+  200: boolean
+}
+
+export type WorkflowDeleteResponse = WorkflowDeleteResponses[keyof WorkflowDeleteResponses]
+
+export type WorkflowGetData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/run/{id}"
+}
+
+export type WorkflowGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowGetError = WorkflowGetErrors[keyof WorkflowGetErrors]
+
+export type WorkflowGetResponses = {
+  /**
+   * Workflow run
+   */
+  200: WorkflowRun
+}
+
+export type WorkflowGetResponse = WorkflowGetResponses[keyof WorkflowGetResponses]
+
+export type WorkflowStartData = {
+  body?: WorkflowStartPayload
+  path: {
+    name: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{name}/start"
+}
+
+export type WorkflowStartErrors = {
+  /**
+   * WorkflowApiError | InvalidRequestError
+   */
+  400: WorkflowApiError | InvalidRequestError
+}
+
+export type WorkflowStartError = WorkflowStartErrors[keyof WorkflowStartErrors]
+
+export type WorkflowStartResponses = {
+  /**
+   * Workflow run started
+   */
+  200: WorkflowRun
+}
+
+export type WorkflowStartResponse = WorkflowStartResponses[keyof WorkflowStartResponses]
+
+export type WorkflowCancelData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/run/{id}/cancel"
+}
+
+export type WorkflowCancelErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowCancelError = WorkflowCancelErrors[keyof WorkflowCancelErrors]
+
+export type WorkflowCancelResponses = {
+  /**
+   * Workflow run cancelled
+   */
+  200: WorkflowRun
+}
+
+export type WorkflowCancelResponse = WorkflowCancelResponses[keyof WorkflowCancelResponses]
 
 export type V2HealthGetData = {
   body?: never

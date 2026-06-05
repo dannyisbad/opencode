@@ -3,9 +3,11 @@ import {
   createContext,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   Match,
+  onCleanup,
   on,
   onMount,
   Show,
@@ -50,6 +52,7 @@ import { webSearchProviderLabel, type WebSearchTool } from "@/tool/websearch"
 import type { TaskTool } from "@/tool/task"
 import type { QuestionTool } from "@/tool/question"
 import type { SkillTool } from "@/tool/skill"
+import type { WorkflowTool } from "@/tool/workflow"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK } from "@tui/context/sdk"
 import { useEditorContext } from "@tui/context/editor"
@@ -62,6 +65,7 @@ import { DialogConfirm } from "@tui/ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
+import { DialogWorkflow } from "../../component/dialog-workflow"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
@@ -144,6 +148,7 @@ const sessionBindingCommands = [
   "session.copy",
   "session.export",
   "session.child.first",
+  "session.workflow.open",
   "session.parent",
   "session.child.next",
   "session.child.previous",
@@ -270,6 +275,27 @@ export function Session() {
   const toast = useToast()
   const sdk = useSDK()
   const editor = useEditorContext()
+  const latestWorkflowToolRunID = createMemo(() =>
+    messages()
+      .flatMap((message) => sync.data.part[message.id] ?? [])
+      .filter((part): part is ToolPart => part.type === "tool" && part.tool === "workflow")
+      .map((part) => workflowMetadata(part.state.status === "pending" ? undefined : part.state.metadata).runId)
+      .findLast((runId): runId is string => typeof runId === "string"),
+  )
+  const [workflowRun] = createResource(
+    () => {
+      const runID = route.workflowRunID ?? latestWorkflowToolRunID()
+      return runID ? `run:${runID}` : `session:${route.sessionID}`
+    },
+    async (source) => {
+      if (source.startsWith("run:")) {
+        const result = await sdk.client.workflow.get({ id: source.slice(4) })
+        return result.data
+      }
+      const result = await sdk.client.workflow.runs()
+      return result.data?.find((run) => run.session_id === source.slice(8))
+    },
+  )
 
   createEffect(() => {
     const sessionID = route.sessionID
@@ -442,6 +468,10 @@ export function Session() {
     navigate({
       type: "session",
       sessionID,
+      workflowRunID: route.workflowRunID,
+      workflowPhase: route.workflowPhase,
+      workflowAgentID: route.workflowAgentID,
+      workflowReturnSessionID: route.workflowReturnSessionID,
     })
     const status = sync.data.session_status[sessionID]
     if (status?.type === "retry") void DialogAlert.show(dialog, "Retry Error", status.message)
@@ -462,6 +492,14 @@ export function Session() {
     if (next >= sessions.length) next = 0
     if (next < 0) next = sessions.length - 1
     if (sessions[next]) enterChild(sessions[next].id)
+  }
+
+  function openWorkflowRun() {
+    const run = workflowRun()
+    if (!run) return
+    dialog.replace(() => (
+      <DialogWorkflow openRunID={run.id} openPhase={route.workflowPhase} openAgentID={route.workflowAgentID} />
+    ))
   }
 
   function childSessionHandler(func: () => void) {
@@ -1054,12 +1092,33 @@ export function Session() {
       },
     },
     {
+      title: "Open workflow details",
+      value: "session.workflow.open",
+      category: "Session",
+      hidden: true,
+      enabled: !!workflowRun(),
+      run: () => {
+        openWorkflowRun()
+      },
+    },
+    {
       title: "Go to parent session",
       value: "session.parent",
       category: "Session",
       hidden: true,
       enabled: !!session()?.parentID,
       run: childSessionHandler(() => {
+        const workflowRunID = route.workflowRunID
+        const workflowPhase = route.workflowPhase
+        const workflowAgentID = route.workflowAgentID
+        const workflowReturnSessionID = route.workflowReturnSessionID
+        if (workflowRunID) {
+          navigate(workflowReturnSessionID ? { type: "session", sessionID: workflowReturnSessionID } : { type: "home" })
+          dialog.replace(() => (
+            <DialogWorkflow openRunID={workflowRunID} openPhase={workflowPhase} openAgentID={workflowAgentID} />
+          ))
+          return
+        }
         const parentID = session()?.parentID
         if (parentID) {
           navigate({
@@ -1131,6 +1190,7 @@ export function Session() {
   }))
 
   const revertInfo = createMemo(() => session()?.revert)
+  const workflowShortcut = useCommandShortcut("session.workflow.open")
   const revertMessageID = createMemo(() => revertInfo()?.messageID)
 
   const revertDiffFiles = createMemo(() => getRevertDiffFiles(revertInfo()?.diff ?? ""))
@@ -1293,6 +1353,19 @@ export function Session() {
                     </Switch>
                   )}
                 </For>
+                <Show when={workflowRun()}>
+                  {(run) => (
+                    <box paddingTop={1} paddingLeft={3}>
+                      <text fg={theme.text}>
+                        {workflowShortcut()}
+                        <span style={{ fg: theme.textMuted }}>
+                          {" "}
+                          open workflow details for {run().workflow} ({run().id.replace(/^job_/, "#")})
+                        </span>
+                      </text>
+                    </box>
+                  )}
+                </Show>
               </scrollbox>
               <box flexShrink={0}>
                 <Show when={permissions().length > 0}>
@@ -1481,10 +1554,15 @@ function UserMessage(props: {
 function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
   const ctx = use()
   const local = useLocal()
-  const { theme } = useTheme()
+  const { theme, syntax } = useTheme()
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
   const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
+  const structured = createMemo(() => {
+    if (props.parts.some((part) => part.type === "text" && part.text.trim())) return
+    if (props.message.structured === undefined) return
+    return "```json\n" + JSON.stringify(props.message.structured, null, 2) + "\n```"
+  })
 
   const final = createMemo(() => {
     return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
@@ -1518,6 +1596,20 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           )
         }}
       </For>
+      <Show when={structured()}>
+        <box id={"structured-" + props.message.id} paddingLeft={3} marginTop={1} flexShrink={0}>
+          <markdown
+            syntaxStyle={syntax()}
+            streaming={false}
+            internalBlockMode="top-level"
+            content={structured() ?? ""}
+            tableOptions={{ style: "grid" }}
+            conceal={ctx.conceal()}
+            fg={theme.markdownText}
+            bg={theme.background}
+          />
+        </box>
+      </Show>
       <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>
@@ -1779,6 +1871,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={props.part.tool === "task"}>
           <Task {...toolprops} />
         </Match>
+        <Match when={props.part.tool === "workflow"}>
+          <WorkflowCall {...toolprops} />
+        </Match>
         <Match when={props.part.tool === "apply_patch"}>
           <ApplyPatch {...toolprops} />
         </Match>
@@ -1807,6 +1902,16 @@ type ToolProps<T> = {
   output?: string
   part: ToolPart
 }
+
+function workflowMetadata(input?: Record<string, unknown>) {
+  return {
+    runId: typeof input?.runId === "string" ? input.runId : undefined,
+    sessionId: typeof input?.sessionId === "string" ? input.sessionId : undefined,
+    workflow: typeof input?.workflow === "string" ? input.workflow : undefined,
+    background: input?.background === true,
+  }
+}
+
 function GenericTool(props: ToolProps<any>) {
   const { theme } = useTheme()
   const ctx = use()
@@ -2053,6 +2158,75 @@ function BlockTool(props: {
         <text fg={theme.error}>{error()}</text>
       </Show>
     </box>
+  )
+}
+
+function WorkflowCall(props: ToolProps<typeof WorkflowTool>) {
+  const { theme } = useTheme()
+  const dialog = useDialog()
+  const sdk = useSDK()
+  const meta = createMemo(() => workflowMetadata(props.metadata as Record<string, unknown> | undefined))
+  const [run, { refetch }] = createResource(
+    () => meta().runId,
+    async (id) => {
+      if (!id) return
+      const result = await sdk.client.workflow.get({ id })
+      return result.data
+    },
+  )
+  const current = createMemo(() => run())
+  const isRunning = createMemo(() => props.part.state.status === "running" || current()?.status === "running")
+  const duration = createMemo(() => {
+    const value = current()
+    if (typeof value?.started_at !== "number" || typeof value.completed_at !== "number") return 0
+    return value.completed_at - value.started_at
+  })
+
+  createEffect(() => {
+    const runID = meta().runId
+    if (!runID) return
+    const interval = setInterval(() => {
+      if (props.part.state.status === "running" || current()?.status === "running") void refetch()
+    }, 1000)
+    onCleanup(() => clearInterval(interval))
+  })
+
+  const content = createMemo(() => {
+    if (props.input.action !== "start") return undefined
+    const label = current()?.definition?.meta.name ?? meta().workflow ?? props.input.name ?? "Workflow"
+    const lines = [meta().background ? `${label} (background)` : label]
+    if (isRunning()) {
+      const activeAgent = current()?.agents.findLast((agent) => agent.status === "running") ?? current()?.agents.at(-1)
+      if (current()?.current_phase) lines.push(`↳ phase ${current()!.current_phase}`)
+      else if (activeAgent) {
+        lines.push(
+          `↳ ${activeAgent.agent ? `@${activeAgent.agent}` : "agent"}${activeAgent.phase ? ` · ${activeAgent.phase}` : ""}`,
+        )
+      } else lines.push("↳ starting")
+    }
+    if (!isRunning() && current()) {
+      lines.push(`└ ${current()!.agents.length} agent runs · ${Locale.duration(duration())}`)
+    }
+    return lines.join("\n")
+  })
+
+  if (props.input.action !== "start") return <GenericTool {...props} />
+
+  return (
+    <InlineTool
+      icon="│"
+      color={theme.textMuted}
+      spinner={isRunning()}
+      complete={meta().workflow ?? props.input.name ?? props.input.action}
+      pending="Starting workflow..."
+      part={props.part}
+      onClick={() => {
+        if (!meta().runId) return
+        dialog.replace(() => <DialogWorkflow openRunID={meta().runId!} />)
+      }}
+    >
+      {content()}
+    </InlineTool>
   )
 }
 

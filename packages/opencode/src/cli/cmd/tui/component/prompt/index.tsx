@@ -51,6 +51,14 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
+import { DialogWorkflow } from "../dialog-workflow"
+import { listWorkflowInfos, parseWorkflowArgs } from "./workflow-autocomplete"
+import {
+  confirmWorkspaceFileChanges,
+  openWorkspaceSelect,
+  warpWorkspaceSession,
+  type WorkspaceSelection,
+} from "../dialog-workspace-create"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "@tui/context/args"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -1055,6 +1063,33 @@ export function Prompt(props: PromptProps) {
         command: inputText,
       })
       setStore("mode", "normal")
+    } else if (inputText.trim() === "/workflows") {
+      dialog.replace(() => <DialogWorkflow />)
+    } else if (inputText.startsWith("/workflow")) {
+      const firstLine = inputText.split("\n")[0]
+      const [, name, ...args] = firstLine.split(" ").filter(Boolean)
+      if (!name) {
+        dialog.replace(() => <DialogWorkflow />)
+      } else {
+        // Resolve the workflow's declared argument types so parsing coerces only
+        // declared-number args (e.g. `version=1.0` stays the string "1.0").
+        // listWorkflowInfos already drops invalid entries, so a broken file never
+        // supplies a synthesized meta here; an unknown name simply yields no
+        // declaration and every arg stays a string (the safe default).
+        const infos = await listWorkflowInfos(sdk.client.workflow, true)
+        const declaration = infos.find((info) => info.name === name)?.meta.arguments ?? {}
+        void sdk.client.workflow
+          .start({ name, workflowStartPayload: { args: parseWorkflowArgs(args.join(" "), declaration) } })
+          .then((result) => {
+            if (!result.data) {
+              toast.show({ message: `Failed to start workflow ${name}`, variant: "error" })
+              return
+            }
+            toast.show({ message: `Started workflow ${name}`, variant: "info" })
+            if (result.data.session_id) route.navigate({ type: "session", sessionID: result.data.session_id })
+          })
+          .catch(toast.error)
+      }
     } else if (
       inputText.startsWith("/") &&
       iife(() => {

@@ -79,10 +79,12 @@ import {
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
+import { DialogWorkflow } from "./component/dialog-workflow"
 
 const appGlobalBindingCommands = [
   "session.list",
   "session.new",
+  "workflow.list",
   "session.quick_switch.1",
   "session.quick_switch.2",
   "session.quick_switch.3",
@@ -222,7 +224,11 @@ async function mountTui(input: TuiInput & { keymap: ReturnType<typeof createDefa
   const renderer = input.renderer
   // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
   void renderer.getPalette({ size: 16 }).catch(() => undefined)
-  const mode = (await renderer.waitForThemeMode(1000)) ?? "dark"
+  const mode =
+    (await Promise.race([
+      renderer.waitForThemeMode(1000),
+      new Promise<"dark" | "light" | null>((resolve) => setTimeout(() => resolve(null), 1000).unref()),
+    ])) ?? "dark"
   if (renderer.isDestroyed) return
 
   await render(() => {
@@ -592,6 +598,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             type: "home",
           })
           dialog.clear()
+        },
+      },
+      {
+        name: "workflow.list",
+        title: "Open workflows",
+        category: "Workflow",
+        slashName: "workflows",
+        run: () => {
+          dialog.replace(() => <DialogWorkflow />)
         },
       },
       {

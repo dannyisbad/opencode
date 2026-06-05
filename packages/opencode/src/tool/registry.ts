@@ -52,6 +52,8 @@ import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { Workflow } from "@/workflow/workflow"
+import { WorkflowTool } from "./workflow"
 
 const log = Log.create({ service: "tool.registry" })
 
@@ -106,6 +108,7 @@ export const layer: Layer.Layer<
   | Truncate.Service
   | RuntimeFlags.Service
   | Database.Service
+  | Workflow.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -132,6 +135,7 @@ export const layer: Layer.Layer<
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
+    const workflow = yield* WorkflowTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -239,6 +243,7 @@ export const layer: Layer.Layer<
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          workflow: Tool.init(workflow),
         })
 
         return {
@@ -255,6 +260,7 @@ export const layer: Layer.Layer<
             tool.task,
             tool.fetch,
             tool.todo,
+            tool.workflow,
             tool.search,
             tool.skill,
             tool.patch,
@@ -389,7 +395,11 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(Ripgrep.defaultLayer),
       Layer.provide(Truncate.defaultLayer),
     )
-    .pipe(Layer.provide(Database.defaultLayer), Layer.provide(RuntimeFlags.defaultLayer)),
+    .pipe(
+      Layer.provide(Database.defaultLayer),
+      Layer.provide(Workflow.defaultLayer),
+      Layer.provide(RuntimeFlags.defaultLayer),
+    ),
 )
 
 function isZodType(value: unknown): value is z.ZodType {
