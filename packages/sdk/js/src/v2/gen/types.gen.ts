@@ -74,6 +74,7 @@ export type Event =
   | EventTuiCommandExecute2
   | EventTuiToastShow2
   | EventTuiSessionSelect2
+  | EventTuiBrowserControl2
   | EventIdeInstalled
   | EventIdeContextUpdated
   | EventMcpToolsChanged
@@ -1471,6 +1472,16 @@ export type GlobalEvent = {
            * Session ID to navigate to
            */
           sessionID: string
+        }
+      }
+    | {
+        id: string
+        type: "tui.browser.control"
+        properties: {
+          command: "navigate" | "click" | "type" | "snapshot"
+          params: {
+            [key: string]: unknown
+          }
         }
       }
     | {
@@ -3238,6 +3249,16 @@ export type EventTuiSessionSelect = {
   }
 }
 
+export type EventTuiBrowserControl = {
+  type: "tui.browser.control"
+  properties: {
+    command: "navigate" | "click" | "type" | "snapshot"
+    params: {
+      [key: string]: unknown
+    }
+  }
+}
+
 export type Workspace = {
   id: string
   type: string
@@ -3485,6 +3506,17 @@ export type EventTuiSessionSelect2 = {
      * Session ID to navigate to
      */
     sessionID: string
+  }
+}
+
+export type EventTuiBrowserControl2 = {
+  id: string
+  type: "tui.browser.control"
+  properties: {
+    command: "navigate" | "click" | "type" | "snapshot"
+    params: {
+      [key: string]: unknown
+    }
   }
 }
 
@@ -9804,7 +9836,12 @@ export type TuiShowToastResponses = {
 export type TuiShowToastResponse = TuiShowToastResponses[keyof TuiShowToastResponses]
 
 export type TuiPublishData = {
-  body?: EventTuiPromptAppend | EventTuiCommandExecute | EventTuiToastShow | EventTuiSessionSelect
+  body?:
+    | EventTuiPromptAppend
+    | EventTuiCommandExecute
+    | EventTuiToastShow
+    | EventTuiSessionSelect
+    | EventTuiBrowserControl
   path?: never
   query?: {
     directory?: string

@@ -136,9 +136,9 @@ export type WorkflowContext = {
    */
   forEach<T>(
     items: readonly T[],
-    fn: (item: T, index: number) => WorkflowAgentInput,
+    fn: (item: T, index: number) => WorkflowAgentInput | Promise<any> | any,
     options?: WorkflowForEachOptions,
-  ): Promise<WorkflowAgentResult[]>
+  ): Promise<any[]>
 }
 
 export function workflow<const Args extends WorkflowArguments | undefined = undefined>(input: {

@@ -100,7 +100,10 @@ export const planDynamicWorkflow = Effect.fn("Workflow.planDynamic")(function* (
     plannerSession.info.role === "assistant"
       ? (plannerSession.info.structured as Record<string, unknown> | undefined)
       : undefined
-  if (!plannerResult) return yield* Effect.fail(new Error("Planner produced no structured output"))
+  if (!plannerResult) {
+    console.error("Planner produced no structured output. Info:", JSON.stringify(plannerSession.info, null, 2))
+    return yield* Effect.fail(new Error("Planner produced no structured output"))
+  }
   const source = String(plannerResult.source ?? "")
   if (!source.includes("export const meta") || !source.includes("export async function run")) {
     return yield* Effect.fail(new Error("Planner did not generate a valid workflow source"))

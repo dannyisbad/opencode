@@ -325,9 +325,9 @@ export type ContextApi = {
   }) => Promise<{ data: unknown; text: string }[]>
   readonly forEach: <T>(
     items: readonly T[],
-    fn: (item: T, index: number) => AgentInput,
+    fn: (item: T, index: number) => AgentInput | Promise<any> | any,
     options?: { concurrencyLimit?: number },
-  ) => Promise<{ data: unknown; text: string }[]>
+  ) => Promise<any[]>
 }
 
 // `ContextApi` is the engine-side view of the run context handed to a workflow
@@ -754,7 +754,7 @@ function createContext(input: {
     async forEach(items, fn, options) {
       checkpoint()
       const concurrency = Math.max(1, options?.concurrencyLimit ?? 4)
-      const results: { data: unknown; text: string }[] = []
+      const results: any[] = []
       for (let i = 0; i < items.length; i += concurrency) {
         checkpoint()
         const batch = items.slice(i, i + concurrency)
@@ -764,7 +764,11 @@ function createContext(input: {
             (item, idx) =>
               Effect.promise(async () => {
                 checkpoint()
-                return input.agent(fn(item, i + idx))
+                const val = await fn(item, i + idx)
+                if (val && typeof val === "object" && "prompt" in val) {
+                  return input.agent(val as any)
+                }
+                return val
               }),
             { concurrency: "unbounded" },
           ),

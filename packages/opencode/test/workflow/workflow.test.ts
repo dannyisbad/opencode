@@ -830,4 +830,83 @@ export async function run() { return { value: "two" } }
       expect(secondDone.result).toEqual({ value: "two" })
     }),
   )
+
+  it.instance("forEach supports async callbacks and non-AgentInput return values", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "foreach-async",
+          `export const meta = { name: "foreach-async", phases: ["run"] }
+export async function run(args, ctx) {
+  const items = [1, 2, 3]
+  const results = await ctx.forEach(items, async (item) => {
+    return item * 2
+  })
+  return { results }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const run = yield* workflow.start({ name: "foreach-async" })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(done.run?.result).toEqual({ results: [2, 4, 6] })
+    }),
+  )
+
+  it.instance("forEach supports traditional callbacks returning AgentInput", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "foreach-agent",
+          `export const meta = { name: "foreach-agent", phases: ["run"] }
+export async function run(args, ctx) {
+  const items = ["a", "b"]
+  const results = await ctx.forEach(items, (item) => {
+    return { prompt: "run on " + item }
+  })
+  return { results: results.map(r => r.text) }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const echoPromptOps = () => {
+        const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+          prompt: (input) =>
+            Effect.gen(function* () {
+              if (input.noReply) return assistantReply()
+              const text = input.parts.find((p) => p.type === "text")?.text ?? ""
+              return {
+                info: {
+                  id: "msg_test",
+                  role: "assistant",
+                  providerID: "test",
+                  modelID: "test-model",
+                  cost: 0,
+                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                },
+                parts: [{ type: "text", text: "replied to " + text }],
+              } as unknown as SessionV1.WithParts
+            }),
+          cancel: () => Effect.void,
+        }
+        return ops
+      }
+      const run = yield* workflow.start({
+        name: "foreach-agent",
+        prompt: echoPromptOps(),
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(done.run?.result).toEqual({ results: ["replied to run on a", "replied to run on b"] })
+    }),
+  )
 })

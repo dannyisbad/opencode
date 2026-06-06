@@ -25,6 +25,7 @@ import type {
   ConfigUpdateErrors,
   ConfigUpdateResponses,
   EventSubscribeResponses,
+  EventTuiBrowserControl,
   EventTuiCommandExecute,
   EventTuiPromptAppend,
   EventTuiSessionSelect,
@@ -4982,7 +4983,12 @@ export class Tui extends HeyApiClient {
     parameters?: {
       directory?: string
       workspace?: string
-      body?: EventTuiPromptAppend | EventTuiCommandExecute | EventTuiToastShow | EventTuiSessionSelect
+      body?:
+        | EventTuiPromptAppend
+        | EventTuiCommandExecute
+        | EventTuiToastShow
+        | EventTuiSessionSelect
+        | EventTuiBrowserControl
     },
     options?: Options<never, ThrowOnError>,
   ) {
