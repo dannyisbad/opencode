@@ -98,6 +98,19 @@ const money = new Intl.NumberFormat("en-US", {
 })
 
 const DRAFT_RETENTION_MIN_CHARS = 20
+const INTERRUPT_TIMEOUT_PREFIX = "Abort request timed out after"
+const INTERRUPT_RETRY_HEADER = "x-opencode-abort-retried-after-worker-restart"
+
+function isInterruptTimeoutError(error: unknown) {
+  return errorMessage(error).startsWith(INTERRUPT_TIMEOUT_PREFIX)
+}
+
+function interruptFailedMessage(error: unknown) {
+  if (isInterruptTimeoutError(error)) {
+    return "Interrupt timed out before reaching the worker. TUI worker was restarted. Press Esc twice again if still busy."
+  }
+  return "Interrupt request failed"
+}
 
 function randomIndex(count: number) {
   if (count <= 0) return 0
@@ -287,6 +300,7 @@ export function Prompt(props: PromptProps) {
     extmarkToPartIndex: new Map(),
     interrupt: 0,
   })
+  let abortingSessionID: string | undefined
 
   createEffect(
     on(
@@ -394,18 +408,50 @@ export function Prompt(props: PromptProps) {
             return
           }
           if (!props.sessionID) return
+          const sessionID = props.sessionID
 
-          setStore("interrupt", store.interrupt + 1)
+          const nextInterrupt = store.interrupt + 1
+          setStore("interrupt", nextInterrupt)
 
           setTimeout(() => {
             setStore("interrupt", 0)
           }, 5000)
 
-          if (store.interrupt >= 2) {
-            void sdk.client.session.abort({
-              sessionID: props.sessionID,
-            })
+          if (nextInterrupt >= 2) {
             setStore("interrupt", 0)
+            if (abortingSessionID === sessionID) {
+              dialog.clear()
+              return
+            }
+            abortingSessionID = sessionID
+            void sdk.client.session
+              .abort({
+                sessionID,
+              })
+              .then((result) => {
+                if (result.error) {
+                  toast.show({
+                    message: interruptFailedMessage(result.error),
+                    variant: "error",
+                  })
+                  return
+                }
+                if (result.response.headers.get(INTERRUPT_RETRY_HEADER) === "true") {
+                  toast.show({
+                    message: "Worker restarted and session was interrupted.",
+                    variant: "success",
+                  })
+                }
+              })
+              .catch((error) => {
+                toast.show({
+                  message: interruptFailedMessage(error),
+                  variant: "error",
+                })
+              })
+              .finally(() => {
+                if (abortingSessionID === sessionID) abortingSessionID = undefined
+              })
           }
           dialog.clear()
         },

@@ -59,11 +59,10 @@ export const rpc = {
       body: input.body,
     })
     const response = await Server.Default().app.fetch(request)
-    const body = await response.text()
     return {
       status: response.status,
       headers: Object.fromEntries(response.headers.entries()),
-      body,
+      body: await response.text(),
     }
   },
   snapshot() {

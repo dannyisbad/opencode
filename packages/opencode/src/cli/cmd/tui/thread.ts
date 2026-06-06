@@ -25,32 +25,97 @@ declare global {
   const OPENCODE_WORKER_PATH: string
 }
 
+type WorkerFetchInput = Parameters<typeof rpc.fetch>[0]
+type WorkerFetchOutput = Awaited<ReturnType<typeof rpc.fetch>>
+type WorkerFetchCallOutput = WorkerFetchOutput | Promise<WorkerFetchOutput>
+type WorkerFetchClient = {
+  call(method: "fetch", input: WorkerFetchInput): Promise<WorkerFetchCallOutput>
+}
+type WorkerFetchClientInput = WorkerFetchClient | (() => WorkerFetchClient)
+type AbortTimeoutInput = { sessionID: string }
+type WorkerFetchOptions = {
+  abortTimeout?: number
+  onAbortTimeout?: (input: AbortTimeoutInput) => void | Promise<void>
+}
 type RpcClient = ReturnType<typeof Rpc.client<typeof rpc>>
+const ABORT_FETCH_TIMEOUT = 3000
+const ABORT_RETRY_HEADER = "x-opencode-abort-retried-after-worker-restart"
 
-function createWorkerFetch(client: RpcClient): typeof fetch {
+function abortSessionID(pathname: string) {
+  return /^\/session\/([^/]+)\/abort$/.exec(pathname)?.[1]
+}
+
+function abortTimeoutMessage(abortTimeout: number) {
+  return `Abort request timed out after ${abortTimeout}ms`
+}
+
+function workerFetchClient(client: WorkerFetchClientInput) {
+  return typeof client === "function" ? client() : client
+}
+
+function workerFetchResponse(result: WorkerFetchOutput, retried = false) {
+  const headers = new Headers(result.headers)
+  if (retried) headers.set(ABORT_RETRY_HEADER, "true")
+  return new Response(result.body, {
+    status: result.status,
+    headers,
+  })
+}
+
+export function createWorkerFetch(client: WorkerFetchClientInput, options: WorkerFetchOptions = {}): typeof fetch {
+  const abortTimeout = options.abortTimeout ?? ABORT_FETCH_TIMEOUT
+  const timeoutMessage = abortTimeoutMessage(abortTimeout)
   const fn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init)
+    const url = new URL(request.url)
+    const sessionID = abortSessionID(url.pathname)
     const body = request.body ? await request.text() : undefined
-    const result = await client.call("fetch", {
+    const workerInput = {
       url: request.url,
       method: request.method,
       headers: Object.fromEntries(request.headers.entries()),
       body,
-    })
-    return new Response(result.body, {
-      status: result.status,
-      headers: result.headers,
-    })
+    }
+    const call = () => workerFetchClient(client).call("fetch", workerInput)
+    try {
+      const response = call()
+      const result = await (sessionID ? withTimeout(response, abortTimeout, timeoutMessage) : response)
+      return workerFetchResponse(result)
+    } catch (error) {
+      const message = errorMessage(error)
+      if (sessionID && message === timeoutMessage && options.onAbortTimeout) {
+        const result = await Promise.resolve(options.onAbortTimeout({ sessionID }))
+          .then(() => withTimeout(call(), abortTimeout, timeoutMessage))
+          .catch(() => undefined)
+        if (result) {
+          return workerFetchResponse(result, true)
+        }
+      }
+      throw error
+    }
   }
   return fn as typeof fetch
 }
 
-function createEventSource(client: RpcClient): EventSource {
+function createEventSource(
+  client: () => RpcClient,
+  onRestart: (handler: () => void) => () => void,
+): EventSource {
   return {
     subscribe: async (handler) => {
-      return client.on<GlobalEvent>("global.event", (e) => {
+      let unsubscribeEvent = client().on<GlobalEvent>("global.event", (e) => {
         handler(e)
       })
+      const unsubscribeRestart = onRestart(() => {
+        unsubscribeEvent()
+        unsubscribeEvent = client().on<GlobalEvent>("global.event", (e) => {
+          handler(e)
+        })
+      })
+      return () => {
+        unsubscribeRestart()
+        unsubscribeEvent()
+      }
     },
   }
 }
@@ -143,25 +208,50 @@ export const TuiThreadCommand = cmd({
         [OPENCODE_RUN_ID]: ensureRunID(),
       })
 
-      const worker = new Worker(file, {
-        env,
-      })
-      worker.onerror = (e) => {
-        Log.Default.error("thread error", {
-          message: e.message,
-          filename: e.filename,
-          lineno: e.lineno,
-          colno: e.colno,
-          error: e.error,
-        })
+      function startWorker() {
+        const worker = new Worker(file, { env })
+        worker.onerror = (e) => {
+          Log.Default.error("thread error", {
+            message: e.message,
+            filename: e.filename,
+            lineno: e.lineno,
+            colno: e.colno,
+            error: e.error,
+          })
+        }
+        return { worker, client: Rpc.client<typeof rpc>(worker) }
       }
 
-      const client = Rpc.client<typeof rpc>(worker)
+      const restartListeners = new Set<() => void>()
+      let current = startWorker()
+      let stopped = false
+      let restarting: Promise<void> | undefined
+      const currentClient = () => current.client
+      const onWorkerRestart = (handler: () => void) => {
+        restartListeners.add(handler)
+        return () => {
+          restartListeners.delete(handler)
+        }
+      }
+      const restartWorker = async () => {
+        if (stopped) return
+        if (restarting) return restarting
+        restarting = (async () => {
+          const previous = current
+          current = startWorker()
+          for (const listener of restartListeners) listener()
+          previous.worker.terminate()
+        })().finally(() => {
+          restarting = undefined
+        })
+        return restarting
+      }
+
       const error = (e: unknown) => {
         Log.Default.error("process error", { error: errorMessage(e) })
       }
       const reload = () => {
-        client.call("reload", undefined).catch((err) => {
+        currentClient().call("reload", undefined).catch((err) => {
           Log.Default.warn("worker reload failed", {
             error: errorMessage(err),
           })
@@ -171,19 +261,19 @@ export const TuiThreadCommand = cmd({
       process.on("unhandledRejection", error)
       process.on("SIGUSR2", reload)
 
-      let stopped = false
       const stop = async () => {
         if (stopped) return
         stopped = true
         process.off("uncaughtException", error)
         process.off("unhandledRejection", error)
         process.off("SIGUSR2", reload)
-        await withTimeout(client.call("shutdown", undefined), 5000).catch((error) => {
+        const active = current
+        await withTimeout(active.client.call("shutdown", undefined), 5000).catch((error) => {
           Log.Default.warn("worker shutdown failed", {
             error: errorMessage(error),
           })
         })
-        worker.terminate()
+        active.worker.terminate()
       }
 
       const prompt = await input(args.prompt)
@@ -200,14 +290,14 @@ export const TuiThreadCommand = cmd({
 
       const transport = external
         ? {
-            url: (await client.call("server", network)).url,
+            url: (await currentClient().call("server", network)).url,
             fetch: undefined,
             events: undefined,
           }
         : {
             url: "http://opencode.internal",
-            fetch: createWorkerFetch(client),
-            events: createEventSource(client),
+            fetch: createWorkerFetch(currentClient, { onAbortTimeout: restartWorker }),
+            events: createEventSource(currentClient, onWorkerRestart),
           }
 
       try {
@@ -224,7 +314,7 @@ export const TuiThreadCommand = cmd({
       }
 
       setTimeout(() => {
-        client.call("checkUpgrade", { directory: cwd }).catch(() => {})
+        currentClient().call("checkUpgrade", { directory: cwd }).catch(() => {})
       }, 1000).unref?.()
 
       try {
@@ -235,7 +325,7 @@ export const TuiThreadCommand = cmd({
           renderer,
           async onSnapshot() {
             const tui = writeHeapSnapshot("tui.heapsnapshot")
-            const server = await client.call("snapshot", undefined)
+            const server = await currentClient().call("snapshot", undefined)
             return [tui, server]
           },
           config,
@@ -261,4 +351,3 @@ export const TuiThreadCommand = cmd({
     process.exit(0)
   },
 })
-// scratch
