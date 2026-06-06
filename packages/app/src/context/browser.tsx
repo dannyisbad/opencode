@@ -20,9 +20,17 @@ export const { use: useBrowser, provider: BrowserProvider } = createSimpleContex
     const [store, setStore] = createStore({
       tabs: [] as BrowserTab[],
       activeTabId: null as string | null,
-      bookmarks: persisted<Bookmark[]>("browser.bookmarks", []),
-      isOpen: persisted<boolean>("browser.isOpen", false),
     })
+
+    const [bookmarks, setBookmarks] = persisted<Bookmark[]>(
+      "browser.bookmarks",
+      createStore([] as Bookmark[])
+    )
+
+    const [isOpenState, setIsOpenState] = persisted<{ value: boolean }>(
+      "browser.isOpen",
+      createStore({ value: false as boolean })
+    )
 
     const openBrowser = (url: string = "https://google.com") => {
       if (store.tabs.length === 0) {
@@ -32,28 +40,28 @@ export const { use: useBrowser, provider: BrowserProvider } = createSimpleContex
       } else if (url !== "https://google.com") {
         setStore("tabs", 0, "url", url)
       }
-      setStore("isOpen", true)
+      setIsOpenState("value", true)
     }
 
     const toggleBrowser = () => {
-      if (store.isOpen) {
-        setStore("isOpen", false)
+      if (isOpenState.value) {
+        setIsOpenState("value", false)
       } else {
         openBrowser()
       }
     }
 
     const closeBrowser = () => {
-      setStore("isOpen", false)
+      setIsOpenState("value", false)
     }
 
     const addBookmark = (title: string, url: string) => {
       const id = Math.random().toString(36).substring(7)
-      setStore("bookmarks", (prev) => [...prev, { id, title, url }])
+      setBookmarks((prev) => [...prev, { id, title, url }])
     }
 
     const removeBookmark = (id: string) => {
-      setStore("bookmarks", (prev) => prev.filter((b) => b.id !== id))
+      setBookmarks((prev) => prev.filter((b) => b.id !== id))
     }
 
     const navigateTo = (id: string, url: string) => {
@@ -65,7 +73,12 @@ export const { use: useBrowser, provider: BrowserProvider } = createSimpleContex
     }
 
     return {
-      store,
+      store: {
+        get tabs() { return store.tabs },
+        get activeTabId() { return store.activeTabId },
+        get bookmarks() { return bookmarks },
+        get isOpen() { return isOpenState.value },
+      },
       openBrowser,
       toggleBrowser,
       closeBrowser,

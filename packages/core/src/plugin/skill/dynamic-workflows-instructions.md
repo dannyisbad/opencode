@@ -39,7 +39,9 @@ The planner will:
 1. Analyze the objective
 2. Generate a TypeScript workflow with appropriate phases
 3. Write it to a temporary file
-4. Start execution immediately
+4. Start execution immediately in the background
+
+Because it runs in the background by default, you can continue chatting with the user or working on other tasks while the workflow orchestrates the subagents. When it finishes, it will automatically inject a completion message with the final synthesized result back into your session.
 
 ## Available Primitives
 

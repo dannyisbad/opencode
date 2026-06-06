@@ -1,6 +1,6 @@
 import { createSignal, onMount, Show, onCleanup } from "solid-js"
 import { IconButton } from "../icon-button"
-import { IconV2 } from "../icon-v2"
+import { Icon } from "../icon"
 import "./browser-view.css"
 
 export interface BrowserViewProps {
@@ -151,11 +151,11 @@ export function BrowserView(props: BrowserViewProps) {
         <div class="browser-nav-buttons">
           <IconButton icon="arrow-left" variant="ghost" size="small" disabled={!canGoBack()} onClick={() => webview.goBack()} />
           <IconButton icon="arrow-right" variant="ghost" size="small" disabled={!canGoForward()} onClick={() => webview.goForward()} />
-          <IconButton icon={isLoading() ? "close" : "refresh"} variant="ghost" size="small" onClick={() => (isLoading() ? webview.stop() : webview.reload())} />
+          <IconButton icon={isLoading() ? "close" : "reset"} variant="ghost" size="small" onClick={() => (isLoading() ? webview.stop() : webview.reload())} />
         </div>
         <form class="browser-url-bar" onSubmit={handleNavigate}>
           <div class="url-input-container">
-            <IconV2 name="lock" size={12} class="url-lock-icon" />
+            <Icon name="shield" size="small" class="url-lock-icon" />
             <input
               type="text"
               value={currentUrl()}
@@ -170,15 +170,15 @@ export function BrowserView(props: BrowserViewProps) {
         </form>
         <div class="browser-actions">
           <IconButton
-            icon="target"
+            icon="selector"
             variant="ghost"
             size="small"
             onClick={togglePicker}
             state={isPicking() ? "pressed" : undefined}
             tooltip="Pick an element from the page"
           />
-          <IconButton icon="star" variant="ghost" size="small" onClick={() => props.onBookmark?.(webview.getTitle(), webview.getURL())} />
-          <IconButton icon="chat" variant="ghost" size="small" onClick={handleSendSelection} tooltip="Send selection to Agent" />
+          <IconButton icon="folder" variant="ghost" size="small" onClick={() => props.onBookmark?.(webview.getTitle(), webview.getURL())} />
+          <IconButton icon="comment" variant="ghost" size="small" onClick={handleSendSelection} tooltip="Send selection to Agent" />
           <IconButton icon="share" variant="ghost" size="small" onClick={handleSharePage} tooltip="Share page with Agent" />
           <Show when={props.onClose}>
             <div class="browser-divider" />

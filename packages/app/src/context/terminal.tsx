@@ -186,14 +186,13 @@ function createWorkspaceTerminalSession(sdk: ReturnType<typeof useSDK>, dir: str
   })
   onCleanup(unsub)
 
-  const unsubCreated = sdk.event.on("pty.created", (event: { properties: { info: LocalPTY } }) => {
+  const unsubCreated = sdk.event.on("pty.created", (event) => {
     const { info } = event.properties
     if (store.all.findIndex((x) => x.id === info.id) >= 0) return
     const newTerminal = {
       id: info.id,
       title: info.title,
-      titleNumber: info.titleNumber ?? numberFromTitle(info.title) ?? 0,
-      source: info.source,
+      titleNumber: numberFromTitle(info.title) ?? 0,
     }
     setStore("all", store.all.length, newTerminal)
   })

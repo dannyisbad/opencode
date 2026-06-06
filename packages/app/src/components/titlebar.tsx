@@ -437,24 +437,43 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                   state={!!homeMatch() ? "pressed" : undefined}
                 />
 
-                <div class="flex min-w-0 flex-1 flex-row items-center gap-1.5 overflow-hidden">
-                  <div class="flex min-w-0 flex-row items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:hidden">
-                    <For each={tabsEnriched()}>
-                      {(tab, i) => (
-                        <>
-                          {i() !== 0 && (
-                            <div class="w-[1.5px] h-3 shrink-0 rounded-full bg-[var(--v2-background-bg-layer-02)]" />
-                          )}
-                          <TabNavItem
-                            href={tab.href}
-                            title={tab.info.title}
-                            project={projectForSession(tab.info, projects(), projectByID())}
-                            directory={tab.dir}
-                            sessionId={tab.info.id}
-                            onClose={() => tabsStoreActions.removeTab(tab.href)}
-                          />
-                        </>
-                      )}
+                <div
+                  class="flex min-w-0 flex-row items-center gap-1.5 overflow-x-auto no-scrollbar [app-region:no-drag]"
+                  ref={tabScrollRef}
+                >
+                  <div class="flex min-w-0 flex-row items-center gap-1.5">
+                    <For each={tabsStore}>
+                      {(tab, i) => {
+                        let ref!: HTMLDivElement
+
+                        onMount(() => {
+                          refreshTabsAreOverflowing()
+                        })
+
+                        return (
+                          <>
+                            {i() !== 0 && (
+                              <div class="w-[1.5px] h-3 shrink-0 rounded-full bg-[var(--v2-background-bg-layer-02)]" />
+                            )}
+                            <TabNavItem
+                              ref={ref}
+                              href={tabHref(tab)}
+                              server={tab.server}
+                              directory={decode64(tab.dirBase64)!}
+                              sessionId={tab.sessionId}
+                              onNavigate={() => {
+                                navigateTab(tab)
+
+                                ref.scrollIntoView({ behavior: "instant" })
+                              }}
+                              onClose={() => tabsStoreActions.removeTab(i())}
+                              active={currentTab() === tab}
+                              activeServer={tab.server === server.key}
+                              forceTruncate={tabsAreOverflowing()}
+                            />
+                          </>
+                        )
+                      }}
                     </For>
                     <Show when={creating() && params.dir}>
                       {(_) => {
@@ -641,12 +660,13 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                         <Tooltip placement="bottom" value={language.t("sidebar.browser") ?? "Browser"} openDelay={2000}>
                           <Button
                             variant="ghost"
-                            icon="globe"
                             class="titlebar-icon w-8 h-6 p-0 box-border ml-1"
                             onClick={() => browser.toggleBrowser()}
                             aria-label={language.t("sidebar.browser") ?? "Browser"}
                             aria-pressed={browser.store.isOpen}
-                          />
+                          >
+                            <IconV2 name="globe" />
+                          </Button>
                         </Tooltip>
                       </div>
                     </Show>
@@ -779,7 +799,7 @@ function TabNavItem(props: {
   return (
     <div
       class="group relative flex h-7 min-w-24 max-w-60 shrink-0 flex-row items-center gap-1.5 overflow-hidden whitespace-nowrap rounded-[6px] bg-[var(--tab-bg)] px-1.5 [--tab-bg:var(--v2-background-bg-deep)] hover:[--tab-bg:var(--v2-background-bg-layer-02)] data-[active='true']:[--tab-bg:var(--v2-background-bg-layer-02)]"
-      data-active={isActive()}
+      data-active={props.active}
       onMouseDown={(event) => {
         if (event.button !== 1) return
         closeTab(event)

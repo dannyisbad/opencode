@@ -76,7 +76,7 @@ const DESCRIPTION = [
   "- wait: wait for a running workflow by run_id.",
   "- inspect: inspect workflow history, logs, agents, a specific agent, result, or all details.",
   "- create: write a persistent .opencode/workflows/<name>.ts workflow file.",
-  "- generate: dynamically generate a workflow tailored to a specific objective. The planner creates a multi-step workflow with phases, parallel agents, and verification. Writes to a temporary workflow file and starts it immediately.",
+  "- generate: dynamically generate a workflow tailored to a specific objective. The planner creates a multi-step workflow with phases, parallel agents, and verification. Writes to a temporary workflow file and starts it immediately in the background by default.",
 ].join("\n")
 
 function promptOps(ctx: Tool.Context) {
@@ -552,10 +552,10 @@ export const WorkflowTool = Tool.define(
 
             yield* ctx.metadata({
               title: run.definition?.meta.name ?? run.workflow,
-              metadata: workflowMetadata(run, params.background === true),
+              metadata: workflowMetadata(run, params.background !== false),
             })
 
-            if (params.background) {
+            if (params.background !== false) {
               const job = yield* background.start({
                 id: run.id,
                 type: "workflow",

@@ -69,7 +69,6 @@ import { DebugBar } from "@/components/debug-bar"
 import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { ServerConnection, useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
-import { submitTuiResponse, nextTuiRequest } from "@opencode-ai/sdk/v2/client"
 import { pathKey } from "@/utils/path-key"
 import {
   displayName,
@@ -261,9 +260,10 @@ export default function Layout(props: ParentProps) {
       makeEventListener(window, "blur", blur)
       makeEventListener(document, "visibilitychange", hide)
 
-      const unsub = serverSDK.event.listen("global", (e) => {
-        if (e.type === "tui.browser.control") {
-          const { command, params } = e.properties as any
+      const unsub = serverSDK.event.listen((e) => {
+        const event = e.details as { type: string; properties?: any }
+        if (event.type === "tui.browser.control") {
+          const { command, params } = event.properties ?? {}
           if (command === "navigate") {
             browser.openBrowser(params.url)
           } else if (command === "snapshot") {
@@ -1606,7 +1606,6 @@ export default function Layout(props: ParentProps) {
       directory,
       sessions.map((s) => s.id),
       platform,
-      serverSDK.scope,
     )
     await serverSDK.client.instance.dispose({ directory }).catch(() => undefined)
 
@@ -2374,12 +2373,12 @@ export default function Layout(props: ParentProps) {
       if (activeTab && activeTab.type === "session") {
         void serverSDK.client.session.prompt({
           sessionID: activeTab.sessionId,
-          prompt: [{ type: "text" as const, content: text, start: 0, end: text.length }],
+          parts: [{ type: "text", text }],
         })
         showToast({ variant: "success", title: language.t("browser.sentToAgent") ?? "Sent to Agent" })
       } else {
         showToast({
-          variant: "info",
+          variant: "default",
           title: language.t("browser.noActiveSession") ?? "No active session",
           description: language.t("browser.openSessionToShare") ?? "Open a session to send data to the agent.",
         })
@@ -2412,8 +2411,6 @@ export default function Layout(props: ParentProps) {
       onOpenSettings={openSettings}
       helpLabel={() => language.t("sidebar.help")}
       onOpenHelp={() => platform.openLink("https://opencode.ai/desktop-feedback")}
-      browserLabel={() => language.t("sidebar.browser") ?? "Browser"}
-      onOpenBrowser={() => browser.toggleBrowser()}
       renderPanel={() => {
         if (browser.store.isOpen) return <BrowserPanel />
         return mobile ? <SidebarPanel project={currentProject} mobile /> : <SidebarPanel project={currentProject} merged />

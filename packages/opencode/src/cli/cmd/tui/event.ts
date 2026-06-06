@@ -54,7 +54,7 @@ export const TuiEvent = {
     type: "tui.browser.control",
     schema: {
       command: Schema.Literals(["navigate", "click", "type", "snapshot"]),
-      params: Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+      params: Schema.Record(Schema.String, Schema.Unknown),
     },
   }),
 }

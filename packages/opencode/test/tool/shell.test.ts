@@ -65,6 +65,7 @@ const delayedPipeLayer = Layer.mergeAll(
   Config.defaultLayer,
   Agent.defaultLayer,
   RuntimeFlags.defaultLayer,
+  testInstanceStoreLayer,
 )
 const drainIt = testEffect(delayedPipeLayer)
 type ShellTestServices =
@@ -1220,7 +1221,7 @@ describe("tool.shell abort", () => {
         const elapsed = Date.now() - start
 
         // Reap the detached daemon so the pipe closes and it does not leak.
-        const fsvc = yield* AppFileSystem.Service
+        const fsvc = yield* FSUtil.Service
         const pid = Number(yield* fsvc.readFileString(pidFile).pipe(Effect.catch(() => Effect.succeed("0"))))
         if (pid)
           yield* Effect.sync(() => {
@@ -1358,7 +1359,7 @@ describe("tool.shell truncation", () => {
         )
         const filepath = (result.metadata as { outputPath?: string }).outputPath
         expect(filepath).toBeTruthy()
-        const saved = yield* (yield* AppFileSystem.Service).readFileString(filepath!)
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
         expect(saved.length).toBe(byteCount)
       }),
     ),
