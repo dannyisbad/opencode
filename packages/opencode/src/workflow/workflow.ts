@@ -573,7 +573,7 @@ async function discover(directories: readonly string[]) {
     directories.map(async (dir) =>
       (
         await Promise.all(
-          ["workflows/*.ts", "workflows/*.js"].map((pattern) =>
+          ["workflows/*.ts", "workflows/*.js", "workflows/.dynamic/*.ts", "workflows/.dynamic/*.js"].map((pattern) =>
             Glob.scan(pattern, { cwd: dir, absolute: true, dot: true, symlink: true }),
           ),
         )
