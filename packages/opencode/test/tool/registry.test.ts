@@ -27,6 +27,9 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { FetchHttpClient } from "effect/unstable/http"
 import { Format } from "@/format"
 import { Search } from "@opencode-ai/core/filesystem/search"
+import { EventV2 } from "@opencode-ai/core/event"
+import { Pty } from "@opencode-ai/core/pty"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import * as Truncate from "@/tool/truncate"
 import { InstanceState } from "@/effect/instance-state"
 import { Reference } from "@/reference/reference"
@@ -52,28 +55,45 @@ type RegistryLayerOptions = {
 const registryLayer = (opts: RegistryLayerOptions = {}) =>
   ToolRegistry.layer
     .pipe(
-      Layer.provide(configLayer),
-      Layer.provide(opts.plugin ?? Plugin.defaultLayer),
-      Layer.provide(Question.defaultLayer),
-      Layer.provide(Todo.defaultLayer),
-      Layer.provide(Skill.defaultLayer),
-      Layer.provide(Agent.defaultLayer),
-      Layer.provide(Session.defaultLayer),
-      Layer.provide(Layer.mergeAll(SessionStatus.defaultLayer, BackgroundJob.defaultLayer)),
-      Layer.provide(Provider.defaultLayer),
-      Layer.provide(Layer.mergeAll(Git.defaultLayer, RepositoryCache.defaultLayer)),
-      Layer.provide(Reference.defaultLayer),
-      Layer.provide(LSP.defaultLayer),
-      Layer.provide(Instruction.defaultLayer),
-      Layer.provide(FSUtil.defaultLayer),
-      Layer.provide(EventV2Bridge.defaultLayer),
-      Layer.provide(FetchHttpClient.layer),
-      Layer.provide(Format.defaultLayer),
-      Layer.provide(Layer.mergeAll(node, Database.defaultLayer)),
-      Layer.provide(Search.defaultLayer),
-      Layer.provide(Truncate.defaultLayer),
+      Layer.provide(
+        Layer.mergeAll(
+          configLayer,
+          opts.plugin ?? Plugin.defaultLayer,
+          Question.defaultLayer,
+          Todo.defaultLayer,
+          Skill.defaultLayer,
+          Agent.defaultLayer,
+          Session.defaultLayer,
+          SessionStatus.defaultLayer,
+          BackgroundJob.defaultLayer,
+          Provider.defaultLayer,
+          Git.defaultLayer,
+          RepositoryCache.defaultLayer,
+          Reference.defaultLayer,
+          LSP.defaultLayer,
+          Instruction.defaultLayer,
+          FSUtil.defaultLayer,
+          EventV2Bridge.defaultLayer,
+          FetchHttpClient.layer,
+          Format.defaultLayer,
+          node,
+          Database.defaultLayer,
+          EventV2.defaultLayer,
+          Search.defaultLayer,
+          Ripgrep.defaultLayer,
+          Pty.defaultLayer,
+          Truncate.defaultLayer,
+        )
+      )
     )
-    .pipe(Layer.provide(Workflow.defaultLayer), Layer.provide(RuntimeFlags.layer(opts.flags ?? {})))
+    .pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Workflow.defaultLayer,
+          RuntimeFlags.layer(opts.flags ?? {}),
+        )
+      )
+    )
 
 // Fake Plugin.Service that returns a single plugin whose `tool` map contains
 // one definition with `args: undefined`. Used to exercise the plugin entry

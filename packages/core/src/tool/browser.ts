@@ -1,8 +1,7 @@
 import { Tool, ToolFailure } from "@opencode-ai/llm"
-import { Effect, Layer, Schema } from "effect"
+import { Cause, Effect, Layer, Schema } from "effect"
 import { ToolRegistry } from "./registry"
-import { EventV2Bridge } from "../event-v2-bridge"
-import { TuiEvent } from "../../opencode/src/cli/cmd/tui/event"
+import { EventV2 } from "../event"
 
 export const browserNavigate = Tool.make({
   description: "Navigate the integrated browser to a specific URL.",
@@ -43,19 +42,33 @@ export const browserSnapshot = Tool.make({
   }),
 })
 
+export const BrowserControlEvent = EventV2.define({
+  type: "tui.browser.control",
+  schema: {
+    command: Schema.Literals(["navigate", "click", "type", "snapshot"]),
+    params: Schema.Record(Schema.String, Schema.Unknown),
+  },
+})
+
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const registry = yield* ToolRegistry.Service
-    const events = yield* EventV2Bridge.Service
+    const events = yield* EventV2.Service
 
     const sendBrowserCommand = (command: "navigate" | "click" | "type" | "snapshot", params: any) =>
       Effect.gen(function* () {
-        yield* events.publish(TuiEvent.BrowserControl, {
+        yield* events.publish(BrowserControlEvent, {
           command,
           params,
         })
         return { status: "Command sent to browser" }
-      })
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.fail(
+            new ToolFailure({ message: `Failed to send command ${command} to browser`, error: Cause.squash(cause) }),
+          ),
+        ),
+      )
 
     yield* registry.contribute((editor) => {
       editor.set("browser_navigate", {

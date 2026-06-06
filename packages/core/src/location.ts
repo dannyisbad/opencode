@@ -44,3 +44,17 @@ export const layer = (ref: Ref) =>
       })
     }),
   )
+
+export const defaultLayer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const project = yield* Project.Service
+    const resolved = yield* project.resolve(AbsolutePath.make(process.cwd()))
+    return Service.of({
+      directory: AbsolutePath.make(process.cwd()),
+      project: { id: resolved.id, directory: resolved.directory },
+      vcs: resolved.vcs,
+    })
+  }),
+).pipe(Layer.provide(Project.defaultLayer))
+

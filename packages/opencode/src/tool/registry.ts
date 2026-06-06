@@ -2,6 +2,7 @@ import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
+import { TerminalTool } from "./terminal"
 import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
@@ -31,6 +32,9 @@ import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
+import { Pty } from "@opencode-ai/core/pty"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
+import { EventV2 } from "@opencode-ai/core/event"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -84,32 +88,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
 
-export const layer: Layer.Layer<
-  Service,
-  never,
-  | Config.Service
-  | Plugin.Service
-  | Question.Service
-  | Todo.Service
-  | Agent.Service
-  | Skill.Service
-  | Session.Service
-  | BackgroundJob.Service
-  | Provider.Service
-  | Reference.Service
-  | LSP.Service
-  | Instruction.Service
-  | FSUtil.Service
-  | EventV2Bridge.Service
-  | HttpClient.HttpClient
-  | ChildProcessSpawner
-  | Search.Service
-  | Format.Service
-  | Truncate.Service
-  | RuntimeFlags.Service
-  | Database.Service
-  | Workflow.Service
-> = Layer.effect(
+export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
@@ -129,6 +108,7 @@ export const layer: Layer.Layer<
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
+    const terminal = yield* TerminalTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
     const edit = yield* EditTool
@@ -229,6 +209,7 @@ export const layer: Layer.Layer<
         const tool = yield* Effect.all({
           invalid: Tool.init(invalid),
           shell: Tool.init(shell),
+          terminal: Tool.init(terminal),
           read: Tool.init(read),
           glob: Tool.init(globtool),
           grep: Tool.init(greptool),
@@ -252,6 +233,7 @@ export const layer: Layer.Layer<
             tool.invalid,
             ...(questionEnabled ? [tool.question] : []),
             tool.shell,
+            tool.terminal,
             tool.read,
             tool.glob,
             tool.grep,
@@ -375,30 +357,41 @@ export const layer: Layer.Layer<
 export const defaultLayer = Layer.suspend(() =>
   layer
     .pipe(
-      Layer.provide(Config.defaultLayer),
-      Layer.provide(Plugin.defaultLayer),
-      Layer.provide(Question.defaultLayer),
-      Layer.provide(Todo.defaultLayer),
-      Layer.provide(Skill.defaultLayer),
-      Layer.provide(Agent.defaultLayer),
-      Layer.provide(Session.defaultLayer),
-      Layer.provide(BackgroundJob.defaultLayer),
-      Layer.provide(Provider.defaultLayer),
-      Layer.provide(Reference.defaultLayer),
-      Layer.provide(LSP.defaultLayer),
-      Layer.provide(Instruction.defaultLayer),
-      Layer.provide(FSUtil.defaultLayer),
-      Layer.provide(EventV2Bridge.defaultLayer),
-      Layer.provide(FetchHttpClient.layer),
-      Layer.provide(Format.defaultLayer),
-      Layer.provide(CrossSpawnSpawner.defaultLayer),
-      Layer.provide(Search.defaultLayer),
-      Layer.provide(Truncate.defaultLayer),
+      Layer.provide(
+        Layer.mergeAll(
+          Config.defaultLayer,
+          Plugin.defaultLayer,
+          Question.defaultLayer,
+          Todo.defaultLayer,
+          Skill.defaultLayer,
+          Agent.defaultLayer,
+          Session.defaultLayer,
+          BackgroundJob.defaultLayer,
+          Provider.defaultLayer,
+          Reference.defaultLayer,
+          LSP.defaultLayer,
+          Instruction.defaultLayer,
+          FSUtil.defaultLayer,
+          EventV2.defaultLayer,
+          EventV2Bridge.defaultLayer,
+          FetchHttpClient.layer,
+          Format.defaultLayer,
+          CrossSpawnSpawner.defaultLayer,
+          Search.defaultLayer,
+          Ripgrep.defaultLayer,
+          Pty.defaultLayer,
+          Truncate.defaultLayer,
+        )
+      )
     )
     .pipe(
-      Layer.provide(Database.defaultLayer),
-      Layer.provide(Workflow.defaultLayer),
-      Layer.provide(RuntimeFlags.defaultLayer),
+      Layer.provide(
+        Layer.mergeAll(
+          Database.defaultLayer,
+          Workflow.defaultLayer,
+          RuntimeFlags.defaultLayer,
+        )
+      )
     ),
 )
 

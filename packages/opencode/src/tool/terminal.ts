@@ -8,11 +8,8 @@ import { PtyID } from "@opencode-ai/core/pty/schema"
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
 import { Effect, Deferred, Stream, Schema } from "effect"
-import { InstanceState } from "@/effect/instance-state"
-import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
-import { LocationServiceMap } from "@opencode-ai/core/location-layer"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { InstanceState } from "@/effect/instance-state"
 
 export const log = Log.create({ service: "terminal-tool" })
 
@@ -35,7 +32,6 @@ type SessionState = {
   createdAt: number
   exitCode: number | null
   buffer: string
-  unsubscribe?: Effect.Effect<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -202,26 +198,21 @@ function preview(text: string): string {
 export const TerminalTool = Tool.define(
   "terminal",
   Effect.gen(function* () {
+    const pty = yield* Pty.Service
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
-    const events = yield* EventV2Bridge.Service
-    const locations = yield* LocationServiceMap
+    const events = yield* EventV2.Service
 
     const shell = Shell.name(Shell.acceptable())
     log.info("terminal tool using shell", { shell })
 
-    const instance = yield* InstanceState.context
-
     // --- InstanceState for persistent sessions ---
     const sessionState = yield* InstanceState.make<Map<string, SessionState>>(
-      (_ctx) =>
+      (_ctx: any) =>
         Effect.gen(function* () {
           const sessions = new Map<string, SessionState>()
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
-              const pty = yield* Pty.Service.pipe(
-                Effect.provide(locations.get({ directory: AbsolutePath.make(instance.directory) }))
-              )
               for (const [id] of sessions) {
                 yield* pty.remove(id as PtyID).pipe(Effect.orDie)
               }
@@ -232,7 +223,7 @@ export const TerminalTool = Tool.define(
         }),
     )
 
-    const description = DESCRIPTION.replaceAll("${directory}", instance.directory)
+    const description = DESCRIPTION.replaceAll("${directory}", "the current directory")
       .replaceAll("${shell}", shell)
       .replaceAll("${os}", process.platform)
       .replaceAll("${maxLines}", String(Truncate.MAX_LINES))
@@ -243,10 +234,7 @@ export const TerminalTool = Tool.define(
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          const pty = yield* Pty.Service.pipe(
-            Effect.provide(locations.get({ directory: AbsolutePath.make(instance.directory) }))
-          )
-
+          const instance = yield* InstanceState.context
           // --- action: "run" (default, backward-compatible) ---
           if (params.action === "run" || params.action === undefined) {
             return yield* Effect.scoped(Effect.gen(function* () {
@@ -287,7 +275,7 @@ export const TerminalTool = Tool.define(
                 cwd,
                 title: `Agent: ${params.description.slice(0, 30)}`,
                 env,
-              }).pipe(Effect.orDie)
+              })
 
               yield* Effect.addFinalizer(() => pty.remove(info.id).pipe(Effect.orDie))
 
@@ -298,18 +286,10 @@ export const TerminalTool = Tool.define(
                 },
               })
 
-              const exitDeferred = yield* Deferred.make<
-                { kind: "exit"; code: number } | { kind: "timeout" } | { kind: "abort" }
-              >()
-
               let buffer = ""
 
               const mockWs = createMockSocket((chunk) => {
                 buffer += chunk
-                const { exit } = cleanOutput(buffer, params.command)
-                if (exit !== null) {
-                  Effect.runFork(Deferred.succeed(exitDeferred, { kind: "exit" as const, code: exit }))
-                }
                 Effect.runFork(
                   ctx.metadata({
                     metadata: {
@@ -320,7 +300,9 @@ export const TerminalTool = Tool.define(
                 )
               })
 
-              const conn = yield* pty.connect(info.id, mockWs).pipe(Effect.orDie)
+              const conn = yield* pty.connect(info.id, mockWs).pipe(
+                Effect.catchTag("Pty.NotFoundError", () => Effect.succeed(undefined)),
+              )
               if (!conn) {
                 return {
                   title: params.description,
@@ -339,16 +321,19 @@ export const TerminalTool = Tool.define(
               conn.onMessage(params.command + "\n")
               conn.onMessage(sentinel + "\n")
 
+              const exitDeferred = yield* Deferred.make<
+                { kind: "exit"; code: number } | { kind: "timeout" } | { kind: "abort" }
+              >()
+
               yield* Effect.forkScoped(
-                events.listen((evt) => {
-                  if (evt.type === Pty.Event.Exited.type) {
-                    const data = evt.data as any
-                    if (data.id === info.id) {
-                      return Deferred.succeed(exitDeferred, { kind: "exit" as const, code: data.exitCode }).pipe(Effect.asVoid)
-                    }
-                  }
-                  return Effect.void
-                })
+                events.subscribe(Pty.Event.Exited).pipe(
+                  Stream.filter((evt) => evt.data.id === info.id),
+                  Stream.runForEach((evt) =>
+                    Effect.sync(() =>
+                      Deferred.succeed(exitDeferred, { kind: "exit" as const, code: evt.data.exitCode }),
+                    ),
+                  ),
+                ),
               )
 
               yield* Effect.forkScoped(
@@ -462,18 +447,6 @@ export const TerminalTool = Tool.define(
               cwd,
               title: desc.slice(0, 30),
               env,
-            }).pipe(Effect.orDie)
-
-            // Subscribe to PTY exit event to capture the exit code
-            const unsub = yield* events.listen((evt) => {
-              if (evt.type === Pty.Event.Exited.type) {
-                const data = evt.data as any
-                if (data.id === info.id) {
-                  const s = sessions.get(info.id)
-                  if (s) s.exitCode = data.exitCode
-                }
-              }
-              return Effect.void
             })
 
             sessions.set(info.id, {
@@ -484,8 +457,21 @@ export const TerminalTool = Tool.define(
               createdAt: Date.now(),
               exitCode: null,
               buffer: "",
-              unsubscribe: unsub,
             })
+
+            // Subscribe to PTY exit event to capture the exit code
+            Effect.runFork(
+              events.subscribe(Pty.Event.Exited).pipe(
+                Stream.filter((evt) => evt.data.id === info.id),
+                Stream.take(1),
+                Stream.runForEach((evt) =>
+                  Effect.sync(() => {
+                    const s = sessions.get(info.id)
+                    if (s) s.exitCode = evt.data.exitCode
+                  }),
+                ),
+              ),
+            )
 
             // Subscribe to output for streaming metadata
             let buffer = ""
@@ -504,7 +490,9 @@ export const TerminalTool = Tool.define(
 
             // Connect the mock websocket to stream output metadata to the agent
             // Connection stays alive for the session's lifetime; cleaned up on PTY exit or close
-            yield* pty.connect(info.id, mockWs, 0).pipe(Effect.orDie)
+            yield* pty.connect(info.id, mockWs, 0).pipe(
+              Effect.catchTag("Pty.NotFoundError", () => Effect.void),
+            )
 
             return {
               title: desc,
@@ -547,7 +535,9 @@ export const TerminalTool = Tool.define(
 
             // Send input to PTY — append \n for commands (unless it's a control sequence)
             const data = /^\x03|\x04|\x1a|\x1c$/.test(params.input) ? params.input : params.input + "\n"
-            yield* pty.write(session.ptyId, data).pipe(Effect.orDie)
+            yield* pty.write(session.ptyId, data).pipe(
+              Effect.catchTag("Pty.NotFoundError", () => Effect.void),
+            )
 
             return {
               title: params.description ?? "Send input",
@@ -594,7 +584,9 @@ export const TerminalTool = Tool.define(
               },
             )
 
-            const conn = yield* pty.connect(session.ptyId, readWs, session.lastCursor).pipe(Effect.orDie)
+            const conn = yield* pty.connect(session.ptyId, readWs, session.lastCursor).pipe(
+              Effect.catchTag("Pty.NotFoundError", () => Effect.succeed(undefined)),
+            )
 
             if (conn) {
               conn.onClose()
@@ -646,7 +638,6 @@ export const TerminalTool = Tool.define(
               }
             }
 
-            if (session.unsubscribe) yield* session.unsubscribe.pipe(Effect.orDie)
             yield* pty.remove(session.ptyId).pipe(Effect.orDie)
             sessions.delete(params.sessionId)
 

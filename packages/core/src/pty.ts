@@ -310,3 +310,9 @@ export const layer = Layer.effect(
 )
 
 export const locationLayer = layer
+
+export const defaultLayer = layer.pipe(
+  Layer.provide(EventV2.defaultLayer),
+  Layer.provide(Location.defaultLayer),
+)
+

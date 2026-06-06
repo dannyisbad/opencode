@@ -190,3 +190,5 @@ export const layer = Layer.effect(
     })
   }),
 ).pipe(Layer.provide(FileSystemRipgrep.defaultLayer))
+
+export const defaultLayer = layer.pipe(Layer.provide(AppProcess.defaultLayer))

@@ -59,6 +59,9 @@ import { Truncate } from "@/tool/truncate"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Search } from "@opencode-ai/core/filesystem/search"
+import { EventV2 } from "@opencode-ai/core/event"
+import { Pty } from "@opencode-ai/core/pty"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
 import { Reference } from "../../src/reference/reference"
 import { RepositoryCache } from "../../src/reference/repository-cache"
@@ -132,6 +135,7 @@ function makeHttp() {
     BackgroundJob.defaultLayer,
     status,
     Database.defaultLayer,
+    EventV2.defaultLayer,
     EventV2Bridge.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
@@ -144,6 +148,8 @@ function makeHttp() {
     Layer.provide(Git.defaultLayer),
     Layer.provide(Reference.defaultLayer),
     Layer.provide(Search.defaultLayer),
+    Layer.provide(Ripgrep.defaultLayer),
+    Layer.provide(Pty.defaultLayer),
     Layer.provide(Format.defaultLayer),
     Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
     Layer.provide(Workflow.defaultLayer),
