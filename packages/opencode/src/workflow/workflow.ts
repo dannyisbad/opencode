@@ -302,6 +302,32 @@ export type ContextApi = {
   readonly parallel: <T>(tasks: readonly (() => Promise<T>)[], options?: ParallelOptions) => Promise<T[]>
   readonly pipeline: PipelineFn
   readonly agent: (input: AgentInput) => Promise<{ data: unknown; text: string }>
+  readonly synthesize: (options: {
+    agents: { data: unknown; text: string }[]
+    prompt?: string
+    model?: string
+    agent?: string
+  }) => Promise<{ data: unknown; text: string }>
+  readonly adversarial: (options: {
+    worker: { data: unknown; text: string }
+    rubric?: string[]
+    verifierPrompt?: string
+    verifierModel?: string
+    verifierAgent?: string
+  }) => Promise<{
+    worker: { data: unknown; text: string }
+    verification: { pass: boolean; confidence: number; issues: string[]; evidence: string[] }
+  }>
+  readonly loop: (options: {
+    fn: (iteration: number, previous?: { data: unknown; text: string }) => AgentInput
+    until: (result: { data: unknown; text: string }, iteration: number) => boolean
+    maxIterations?: number
+  }) => Promise<{ data: unknown; text: string }[]>
+  readonly forEach: <T>(
+    items: readonly T[],
+    fn: (item: T, index: number) => AgentInput,
+    options?: { concurrencyLimit?: number },
+  ) => Promise<{ data: unknown; text: string }[]>
 }
 
 // `ContextApi` is the engine-side view of the run context handed to a workflow
@@ -657,6 +683,96 @@ function createContext(input: {
       )
     }) as ContextApi["pipeline"],
     agent: input.agent,
+    async synthesize(options) {
+      checkpoint()
+      const combinedText = options.agents.map((a, i) => `### Agent ${i + 1}\n\n${a.text}`).join("\n\n---\n\n")
+      const prompt = [
+        options.prompt ?? "Synthesize the following agent outputs into one coherent, comprehensive result.",
+        "",
+        combinedText,
+      ].join("\n")
+      return input.agent({
+        agent: options.agent,
+        model: options.model,
+        prompt,
+      })
+    },
+    async adversarial(options) {
+      checkpoint()
+      const criteria = options.rubric?.map((r) => `- ${r}`).join("\n") ?? "- Output is correct and complete"
+      const verifyPrompt = [
+        "You are an independent verifier. Judge the worker output against the criteria.",
+        "Prefer false negatives over accepting unsupported claims.",
+        "",
+        `Criteria:\n${criteria}`,
+        "",
+        `Worker output:\n${options.worker.text.slice(0, 16000)}`,
+        "",
+        options.verifierPrompt ?? "Return a structured verification result with: pass (boolean), confidence (0-1), issues (string array), evidence (string array).",
+      ].join("\n")
+      const schema = {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          pass: { type: "boolean", description: "True only if the output satisfies the criteria." },
+          confidence: { type: "number", description: "0 to 1 confidence in this judgment." },
+          issues: { type: "array", items: { type: "string" } },
+          evidence: { type: "array", items: { type: "string" } },
+        },
+        required: ["pass", "confidence", "issues", "evidence"],
+      }
+      const verification = await input.agent({
+        agent: options.verifierAgent ?? "plan",
+        model: options.verifierModel,
+        prompt: verifyPrompt,
+        schema,
+      })
+      const data = verification.data as Record<string, unknown> | undefined
+      return {
+        worker: options.worker,
+        verification: {
+          pass: Boolean(data?.pass),
+          confidence: typeof data?.confidence === "number" ? Math.max(0, Math.min(1, data.confidence)) : 0.4,
+          issues: Array.isArray(data?.issues) ? data.issues.filter((i): i is string => typeof i === "string") : [],
+          evidence: Array.isArray(data?.evidence) ? data.evidence.filter((i): i is string => typeof i === "string") : [],
+        },
+      }
+    },
+    async loop(options) {
+      checkpoint()
+      const maxIterations = Math.max(1, Math.min(options.maxIterations ?? 5, 20))
+      const collected: { data: unknown; text: string }[] = []
+      for (let i = 0; i < maxIterations; i++) {
+        checkpoint()
+        const agentInput = options.fn(i, collected.length > 0 ? collected[collected.length - 1] : undefined)
+        const result = await input.agent(agentInput)
+        collected.push(result)
+        if (options.until(result, i)) break
+      }
+      return collected
+    },
+    async forEach(items, fn, options) {
+      checkpoint()
+      const concurrency = Math.max(1, options?.concurrencyLimit ?? 4)
+      const results: { data: unknown; text: string }[] = []
+      for (let i = 0; i < items.length; i += concurrency) {
+        checkpoint()
+        const batch = items.slice(i, i + concurrency)
+        const batchResults = await input.bridge.promise(
+          Effect.forEach(
+            batch,
+            (item, idx) =>
+              Effect.promise(async () => {
+                checkpoint()
+                return input.agent(fn(item, i + idx))
+              }),
+            { concurrency: "unbounded" },
+          ),
+        )
+        results.push(...batchResults)
+      }
+      return results
+    },
   }
 }
 

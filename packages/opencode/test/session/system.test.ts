@@ -7,6 +7,9 @@ import { Permission } from "../../src/permission"
 import { SystemPrompt } from "../../src/session/system"
 import { testEffect } from "../lib/effect"
 import { Workflow } from "../../src/workflow/workflow"
+import { Config } from "../../src/config/config"
+import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import type { ConsoleState } from "@opencode-ai/core/v1/config/console-state"
 
 const skills: Skill.Info[] = [
   {
@@ -86,6 +89,21 @@ const it = testEffect(
           all: () => Effect.succeed(skills),
           dirs: () => Effect.succeed([]),
           available: () => Effect.succeed(skills),
+        }),
+      ),
+    ),
+    Layer.provide(
+      Layer.succeed(
+        Config.Service,
+        Config.Service.of({
+          get: () => Effect.succeed({} as ConfigV1.Info),
+          getGlobal: () => Effect.succeed({} as ConfigV1.Info),
+          getConsoleState: () => Effect.succeed({} as ConsoleState),
+          update: () => Effect.void,
+          updateGlobal: () => Effect.succeed({ info: {} as ConfigV1.Info, changed: false }),
+          invalidate: () => Effect.void,
+          directories: () => Effect.succeed([]),
+          waitForDependencies: () => Effect.void,
         }),
       ),
     ),

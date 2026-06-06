@@ -16,6 +16,7 @@ import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 import { Workflow } from "@/workflow/workflow"
+import { Config } from "@/config/config"
 
 export function provider(model: Provider.Model) {
   if (model.api.id.includes("gpt-4") || model.api.id.includes("o1") || model.api.id.includes("o3"))
@@ -45,6 +46,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const skill = yield* Skill.Service
     const workflow = yield* Workflow.Service
+    const config = yield* Config.Service
 
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
@@ -66,13 +68,15 @@ export const layer = Layer.effect(
 
       skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info) {
         const disabled = Permission.disabled(["skill", "workflow"], agent.permission)
+        const cfg = yield* config.get()
+        const dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true
 
         const skillList = disabled.has("skill") ? [] : yield* skill.available(agent)
         const workflowList = disabled.has("workflow")
           ? []
           : yield* workflow.list().pipe(Effect.catch(() => Effect.succeed([])))
 
-        return [
+        const sections: (string | undefined)[] = [
           skillList.length
             ? [
                 "Skills provide specialized instructions and workflows for specific tasks.",
@@ -90,7 +94,15 @@ export const layer = Layer.effect(
                 Workflow.fmt(workflowList),
               ].join("\n")
             : undefined,
+          dynamicWorkflowsEnabled && !disabled.has("workflow")
+            ? [
+                "Dynamic workflows are enabled. When the user mentions 'ultracode', 'workflow', or 'workflows', or when a complex task would benefit from multi-agent orchestration (parallel agents, verification loops, batch processing), use the workflow tool with action='generate' to create a dynamic workflow tailored to the task.",
+                "Dynamic workflows can use: parallel fan-out, synthesis, adversarial verification, iterative loops, and batch processing. They are generated on-the-fly and run through the native workflow engine with full observability.",
+              ].join("\n")
+            : undefined,
         ]
+
+        return sections
           .filter((section): section is string => section !== undefined)
           .join("\n\n")
       }),
@@ -98,6 +110,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Layer.mergeAll(Skill.defaultLayer, Workflow.defaultLayer)))
+export const defaultLayer = layer.pipe(Layer.provide(Layer.mergeAll(Skill.defaultLayer, Workflow.defaultLayer, Config.defaultLayer)))
 
 export * as SystemPrompt from "./system"

@@ -34,6 +34,39 @@ export type WorkflowAgentResult = {
 export type WorkflowParallelOptions = { concurrencyLimit?: number }
 export type WorkflowPipelineOptions = { concurrencyLimit?: number }
 
+export type WorkflowSynthesizeOptions = {
+  agents: WorkflowAgentResult[]
+  prompt?: string
+  model?: string
+  agent?: string
+}
+
+export type WorkflowAdversarialOptions = {
+  worker: WorkflowAgentResult
+  rubric?: string[]
+  verifierPrompt?: string
+  verifierModel?: string
+  verifierAgent?: string
+}
+
+export type WorkflowAdversarialResult = {
+  worker: WorkflowAgentResult
+  verification: {
+    pass: boolean
+    confidence: number
+    issues: string[]
+    evidence: string[]
+  }
+}
+
+export type WorkflowLoopOptions = {
+  fn: (iteration: number, previous?: WorkflowAgentResult) => WorkflowAgentInput
+  until: (result: WorkflowAgentResult, iteration: number) => boolean
+  maxIterations?: number
+}
+
+export type WorkflowForEachOptions = { concurrencyLimit?: number }
+
 /** A pipeline stage: receives the previous stage's output for this item plus the
  * original item, and returns the next value. The first stage's `prev` is the
  * item itself. Stages may change the type (`I → S1 → S2 …`). */
@@ -82,6 +115,30 @@ export type WorkflowContext = {
   parallel<T>(tasks: readonly (() => Promise<T>)[], options?: WorkflowParallelOptions): Promise<T[]>
   pipeline: WorkflowPipelineFn
   agent(input: WorkflowAgentInput): Promise<WorkflowAgentResult>
+  /**
+   * Combine multiple agent outputs into one coherent result.
+   * Waits for all agents, combines their outputs, and runs a synthesis agent.
+   */
+  synthesize(options: WorkflowSynthesizeOptions): Promise<WorkflowAgentResult>
+  /**
+   * Adversarial verification: run a worker, then have a verifier check it against criteria.
+   * Returns the worker result plus a structured verification verdict.
+   */
+  adversarial(options: WorkflowAdversarialOptions): Promise<WorkflowAdversarialResult>
+  /**
+   * Iterate calling an agent until a condition is met or max iterations reached.
+   * fn produces the agent input for each iteration; until returns true to stop.
+   */
+  loop(options: WorkflowLoopOptions): Promise<WorkflowAgentResult[]>
+  /**
+   * Fan-out over an array: spawn one agent per element, then wait for all.
+   * Respects the concurrency limit by batching.
+   */
+  forEach<T>(
+    items: readonly T[],
+    fn: (item: T, index: number) => WorkflowAgentInput,
+    options?: WorkflowForEachOptions,
+  ): Promise<WorkflowAgentResult[]>
 }
 
 export function workflow<const Args extends WorkflowArguments | undefined = undefined>(input: {

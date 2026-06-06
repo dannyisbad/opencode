@@ -39,6 +39,10 @@ const WORKFLOWS_INSTRUCTIONS_SKILL_NAME = "workflows-instructions"
 const WORKFLOWS_INSTRUCTIONS_SKILL_DESCRIPTION =
   "Use when the user asks to create, modify, run, debug, or review opencode workflows. Explains workflow authoring, the native workflow tool, foreground/background execution, permissions, and how to inspect logs, agents, and results. Do not use for ordinary tasks unless the user explicitly wants workflow automation."
 const WORKFLOWS_INSTRUCTIONS_SKILL_BODY = SkillPlugin.WorkflowsInstructionsContent
+const DYNAMIC_WORKFLOWS_INSTRUCTIONS_SKILL_NAME = "dynamic-workflows-instructions"
+const DYNAMIC_WORKFLOWS_INSTRUCTIONS_SKILL_DESCRIPTION =
+  "Use when the user asks about dynamic workflows, multi-agent orchestration, or when a task would benefit from parallel agents, verification loops, or batch processing. Explains how to generate dynamic workflows with the workflow tool action='generate', available primitives, and best practices."
+const DYNAMIC_WORKFLOWS_INSTRUCTIONS_SKILL_BODY = SkillPlugin.DynamicWorkflowsInstructionsContent
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -293,6 +297,12 @@ export const layer = Layer.effect(
           description: WORKFLOWS_INSTRUCTIONS_SKILL_DESCRIPTION,
           location: "<built-in>",
           content: WORKFLOWS_INSTRUCTIONS_SKILL_BODY,
+        }
+        s.skills[DYNAMIC_WORKFLOWS_INSTRUCTIONS_SKILL_NAME] = {
+          name: DYNAMIC_WORKFLOWS_INSTRUCTIONS_SKILL_NAME,
+          description: DYNAMIC_WORKFLOWS_INSTRUCTIONS_SKILL_DESCRIPTION,
+          location: "<built-in>",
+          content: DYNAMIC_WORKFLOWS_INSTRUCTIONS_SKILL_BODY,
         }
         yield* loadSkills(s, yield* InstanceState.get(discovered), events)
         return s

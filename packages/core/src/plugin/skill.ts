@@ -8,9 +8,11 @@ import { AbsolutePath } from "../schema"
 import { SkillV2 } from "../skill"
 import customizeOpencodeContent from "./skill/customize-opencode.md" with { type: "text" }
 import workflowsInstructionsContent from "./skill/workflows-instructions.md" with { type: "text" }
+import dynamicWorkflowsInstructionsContent from "./skill/dynamic-workflows-instructions.md" with { type: "text" }
 
 export const CustomizeOpencodeContent = customizeOpencodeContent
 export const WorkflowsInstructionsContent = workflowsInstructionsContent
+export const DynamicWorkflowsInstructionsContent = dynamicWorkflowsInstructionsContent
 
 export const Plugin = PluginV2.define({
   id: PluginV2.ID.make("skill"),
@@ -40,6 +42,18 @@ export const Plugin = PluginV2.define({
               "Use when the user asks to create, modify, run, debug, or review opencode workflows. Explains workflow authoring, the native workflow tool, foreground/background execution, permissions, and how to inspect logs, agents, and results. Do not use for ordinary tasks unless the user explicitly wants workflow automation.",
             location: AbsolutePath.make("/builtin/workflows-instructions.md"),
             content: WorkflowsInstructionsContent,
+          }),
+        }),
+      )
+      editor.source(
+        new SkillV2.EmbeddedSource({
+          type: "embedded",
+          skill: new SkillV2.Info({
+            name: "dynamic-workflows-instructions",
+            description:
+              "Use when the user asks about dynamic workflows, multi-agent orchestration, or when a task would benefit from parallel agents, verification loops, or batch processing. Explains how to generate dynamic workflows with the workflow tool action='generate', available primitives, and best practices.",
+            location: AbsolutePath.make("/builtin/dynamic-workflows-instructions.md"),
+            content: DynamicWorkflowsInstructionsContent,
           }),
         }),
       )

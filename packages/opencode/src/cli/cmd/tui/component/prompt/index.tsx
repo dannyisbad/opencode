@@ -1737,6 +1737,11 @@ export function Prompt(props: PromptProps) {
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
                 )}
               </Show>
+              <Show when={(sync.data.config as any).dynamic_workflows?.enabled}>
+                <text fg={theme.accent} wrapMode="none">
+                  <b>⚡ ultracode</b>
+                </text>
+              </Show>
               <Switch>
                 <Match when={store.mode === "normal"}>
                   <Switch>

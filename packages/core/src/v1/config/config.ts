@@ -160,6 +160,22 @@ export const Info = Schema.Struct({
       }),
     }),
   ),
+  dynamic_workflows: Schema.optional(
+    Schema.Struct({
+      enabled: Schema.optional(Schema.Boolean).annotate({
+        description: "Enable dynamic workflow generation. When enabled, the agent can generate multi-step workflows tailored to specific tasks.",
+      }),
+      max_agents: Schema.optional(NonNegativeInt).annotate({
+        description: "Maximum total agents per dynamic workflow (default: 16, max: 1000)",
+      }),
+      max_concurrency: Schema.optional(NonNegativeInt).annotate({
+        description: "Maximum concurrent agents per dynamic workflow (default: 4, max: 16)",
+      }),
+      require_approval: Schema.optional(Schema.Boolean).annotate({
+        description: "Require user approval before generating and running dynamic workflows (default: true)",
+      }),
+    }),
+  ).annotate({ description: "Dynamic workflow generation configuration" }),
   experimental: Schema.optional(
     Schema.Struct({
       disable_paste_summary: Schema.optional(Schema.Boolean),

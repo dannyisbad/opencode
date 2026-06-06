@@ -157,7 +157,7 @@ describe("plugin.google-antigravity", () => {
       })
 
       // Spy on global fetch
-      const fetchSpy = spyOn(global, "fetch").mockImplementation(async (request, init) => {
+      const fetchSpy = spyOn(global, "fetch").mockImplementation((async (request, init) => {
         const urlStr = request instanceof URL ? request.href : typeof request === "string" ? request : request.url
         if (urlStr.includes("loadCodeAssist")) {
           return new Response(JSON.stringify({ cloudaicompanionProject: "my-proj" }))
@@ -170,7 +170,7 @@ describe("plugin.google-antigravity", () => {
           return new Response(JSON.stringify({ response: { text: "mocked reply" } }))
         }
         return new Response("not found", { status: 404 })
-      })
+      }) as typeof global.fetch)
 
       try {
         const loaderRes = await hooks.auth!.loader!(getAuthOauth, {} as any)
