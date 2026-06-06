@@ -42,8 +42,14 @@ export type WorkflowSynthesizeOptions = {
 }
 
 export type WorkflowAdversarialOptions = {
-  worker: WorkflowAgentResult
-  rubric?: string[]
+  worker:
+    | WorkflowAgentResult
+    | Promise<WorkflowAgentResult>
+    | (() => WorkflowAgentResult | Promise<WorkflowAgentResult>)
+    | WorkflowAgentInput
+    | (() => WorkflowAgentInput | Promise<WorkflowAgentInput>)
+    | any
+  rubric?: string | string[]
   verifierPrompt?: string
   verifierModel?: string
   verifierAgent?: string
@@ -60,8 +66,11 @@ export type WorkflowAdversarialResult = {
 }
 
 export type WorkflowLoopOptions = {
-  fn: (iteration: number, previous?: WorkflowAgentResult) => WorkflowAgentInput
-  until: (result: WorkflowAgentResult, iteration: number) => boolean
+  fn: (
+    iteration: number,
+    previous?: WorkflowAgentResult,
+  ) => WorkflowAgentInput | Promise<WorkflowAgentInput> | Promise<any> | any
+  until: (result: WorkflowAgentResult, iteration: number) => boolean | Promise<boolean> | any
   maxIterations?: number
 }
 

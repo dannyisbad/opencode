@@ -909,4 +909,161 @@ export async function run(args, ctx) {
       expect(done.run?.result).toEqual({ results: ["replied to run on a", "replied to run on b"] })
     }),
   )
+
+  it.instance("loop supports async fn callbacks and async until checks", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "loop-async",
+          `export const meta = { name: "loop-async", phases: ["run"] }
+export async function run(args, ctx) {
+  const results = await ctx.loop({
+    fn: async (i, prev) => {
+      if (prev) {
+        return { prompt: "run on " + prev.text + " loop " + i }
+      }
+      return { prompt: "initial loop " + i }
+    },
+    until: async (result, i) => {
+      return i >= 2
+    },
+    maxIterations: 5
+  })
+  return { results: results.map(r => r.text) }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const echoPromptOps = () => {
+        const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+          prompt: (input) =>
+            Effect.gen(function* () {
+              if (input.noReply) return assistantReply()
+              const text = input.parts.find((p) => p.type === "text")?.text ?? ""
+              return {
+                info: {
+                  id: "msg_test",
+                  role: "assistant",
+                  providerID: "test",
+                  modelID: "test-model",
+                  cost: 0,
+                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                },
+                parts: [{ type: "text", text: "replied to " + text }],
+              } as unknown as SessionV1.WithParts
+            }),
+          cancel: () => Effect.void,
+        }
+        return ops
+      }
+      const run = yield* workflow.start({
+        name: "loop-async",
+        prompt: echoPromptOps(),
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(done.run?.result).toEqual({
+        results: [
+          "replied to initial loop 0",
+          "replied to run on replied to initial loop 0 loop 1",
+          "replied to run on replied to run on replied to initial loop 0 loop 1 loop 2",
+        ],
+      })
+    }),
+  )
+
+  it.instance("adversarial supports async worker and passes verification", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "adversarial-async",
+          `export const meta = { name: "adversarial-async", phases: ["run"] }
+export async function run(args, ctx) {
+  const result = await ctx.adversarial({
+    worker: async () => {
+      const step = await ctx.agent({ prompt: "do worker task" })
+      return step
+    },
+    rubric: ["correct text"]
+  })
+  return { result }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const echoPromptOps = () => {
+        const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+          prompt: (input) =>
+            Effect.gen(function* () {
+              if (input.noReply) return assistantReply()
+              if (input.format) {
+                const structuredData = {
+                  pass: true,
+                  confidence: 0.95,
+                  issues: [],
+                  evidence: ["verified correct text"]
+                }
+                return {
+                  info: {
+                    id: "msg_verifier",
+                    role: "assistant",
+                    providerID: "test",
+                    modelID: "test-model",
+                    cost: 0,
+                    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                    structured: structuredData,
+                  },
+                  parts: [{
+                    type: "text",
+                    text: JSON.stringify(structuredData)
+                  }],
+                } as unknown as SessionV1.WithParts
+              }
+              const text = input.parts.find((p) => p.type === "text")?.text ?? ""
+              return {
+                info: {
+                  id: "msg_test",
+                  role: "assistant",
+                  providerID: "test",
+                  modelID: "test-model",
+                  cost: 0,
+                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                },
+                parts: [{ type: "text", text: "worker response to " + text }],
+              } as unknown as SessionV1.WithParts
+            }),
+          cancel: () => Effect.void,
+        }
+        return ops
+      }
+      const run = yield* workflow.start({
+        name: "adversarial-async",
+        prompt: echoPromptOps(),
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(done.run?.result).toEqual({
+        result: {
+          worker: {
+            data: "worker response to do worker task",
+            text: "worker response to do worker task",
+          },
+          verification: {
+            pass: true,
+            confidence: 0.95,
+            issues: [],
+            evidence: ["verified correct text"],
+          },
+        },
+      })
+    }),
+  )
 })

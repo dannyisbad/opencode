@@ -309,8 +309,14 @@ export type ContextApi = {
     agent?: string
   }) => Promise<{ data: unknown; text: string }>
   readonly adversarial: (options: {
-    worker: { data: unknown; text: string }
-    rubric?: string[]
+    worker:
+      | { data: unknown; text: string }
+      | Promise<{ data: unknown; text: string }>
+      | (() => { data: unknown; text: string } | Promise<{ data: unknown; text: string }>)
+      | AgentInput
+      | (() => AgentInput | Promise<AgentInput>)
+      | any
+    rubric?: string | string[]
     verifierPrompt?: string
     verifierModel?: string
     verifierAgent?: string
@@ -319,8 +325,11 @@ export type ContextApi = {
     verification: { pass: boolean; confidence: number; issues: string[]; evidence: string[] }
   }>
   readonly loop: (options: {
-    fn: (iteration: number, previous?: { data: unknown; text: string }) => AgentInput
-    until: (result: { data: unknown; text: string }, iteration: number) => boolean
+    fn: (
+      iteration: number,
+      previous?: { data: unknown; text: string },
+    ) => AgentInput | Promise<AgentInput> | Promise<any> | any
+    until: (result: { data: unknown; text: string }, iteration: number) => boolean | Promise<boolean> | any
     maxIterations?: number
   }) => Promise<{ data: unknown; text: string }[]>
   readonly forEach: <T>(
@@ -699,14 +708,19 @@ function createContext(input: {
     },
     async adversarial(options) {
       checkpoint()
-      const criteria = options.rubric?.map((r) => `- ${r}`).join("\n") ?? "- Output is correct and complete"
+      let workerResult = typeof options.worker === "function" ? await options.worker() : await options.worker
+      if (workerResult && typeof workerResult === "object" && "prompt" in workerResult) {
+        workerResult = await input.agent(workerResult as any)
+      }
+      const rubric = typeof options.rubric === "string" ? [options.rubric] : options.rubric
+      const criteria = rubric?.map((r) => `- ${r}`).join("\n") ?? "- Output is correct and complete"
       const verifyPrompt = [
         "You are an independent verifier. Judge the worker output against the criteria.",
         "Prefer false negatives over accepting unsupported claims.",
         "",
         `Criteria:\n${criteria}`,
         "",
-        `Worker output:\n${options.worker.text.slice(0, 16000)}`,
+        `Worker output:\n${(workerResult?.text ?? "").slice(0, 16000)}`,
         "",
         options.verifierPrompt ?? "Return a structured verification result with: pass (boolean), confidence (0-1), issues (string array), evidence (string array).",
       ].join("\n")
@@ -729,7 +743,7 @@ function createContext(input: {
       })
       const data = verification.data as Record<string, unknown> | undefined
       return {
-        worker: options.worker,
+        worker: workerResult,
         verification: {
           pass: Boolean(data?.pass),
           confidence: typeof data?.confidence === "number" ? Math.max(0, Math.min(1, data.confidence)) : 0.4,
@@ -744,10 +758,12 @@ function createContext(input: {
       const collected: { data: unknown; text: string }[] = []
       for (let i = 0; i < maxIterations; i++) {
         checkpoint()
-        const agentInput = options.fn(i, collected.length > 0 ? collected[collected.length - 1] : undefined)
-        const result = await input.agent(agentInput)
+        const agentInput = await options.fn(i, collected.length > 0 ? collected[collected.length - 1] : undefined)
+        const result = (agentInput && typeof agentInput === "object" && "prompt" in agentInput)
+          ? await input.agent(agentInput as any)
+          : agentInput
         collected.push(result)
-        if (options.until(result, i)) break
+        if (await options.until(result, i)) break
       }
       return collected
     },
