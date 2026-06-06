@@ -574,7 +574,10 @@ function HomeActivityGraph(props: {
             <div
               class="group/activity-cell relative aspect-square rounded-[2px] transition-[background-color,opacity] duration-300 motion-reduce:transition-none"
               classList={{ "animate-pulse motion-reduce:animate-none": props.loading }}
+              tabIndex={0}
+              role="button"
               title={activityCellLabel(day.tokens, day.label, props.language.intl())}
+              aria-label={activityCellLabel(day.tokens, day.label, props.language.intl())}
               style={{
                 "grid-column": day.column,
                 "grid-row": day.row,

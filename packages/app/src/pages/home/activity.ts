@@ -1,7 +1,7 @@
 import { DateTime } from "luxon"
 
 export const HOME_ACTIVITY_DAYS = 280
-export const HOME_ACTIVITY_WEEKS = HOME_ACTIVITY_DAYS / 7
+export const HOME_ACTIVITY_WEEKS = Math.floor(HOME_ACTIVITY_DAYS / 7)
 
 export type HomeActivityRecord = {
   session: {
@@ -51,6 +51,7 @@ export type HomeActivity = {
   days: HomeActivityDay[]
   months: HomeActivityMonth[]
   weekCount: number
+  metric: "tokens" | "sessions"
   totalTokens: number
   peakTokens: number
   longestTaskMs: number
@@ -206,14 +207,13 @@ export function buildHomeActivity(
   for (const record of sourceRecords) {
     const created = record.session.time.created
     const updated = record.session.time.updated ?? created
-    const at = updated || created
-    if (!Number.isFinite(at)) continue
+    if (!Number.isFinite(created)) continue
 
     if (Number.isFinite(created) && Number.isFinite(updated) && updated > created) {
       longestTaskMs = Math.max(longestTaskMs, updated - created)
     }
 
-    const day = DateTime.fromMillis(at, { zone: localNow.zone }).setLocale(locale).startOf("day")
+    const day = DateTime.fromMillis(updated, { zone: localNow.zone }).setLocale(locale).startOf("day")
     const dayMillis = day.toMillis()
     if (dayMillis < startMillis || dayMillis > todayMillis) continue
 
@@ -226,9 +226,10 @@ export function buildHomeActivity(
   const totalTokens = daysWithDate.reduce((sum, day) => sum + day.tokens, 0)
   const peakTokens = daysWithDate.reduce((highest, day) => Math.max(highest, day.tokens), 0)
   const peakCount = daysWithDate.reduce((highest, day) => Math.max(highest, day.count), 0)
-  const maxValue = peakTokens > 0 ? peakTokens : peakCount
+  const metric: "tokens" | "sessions" = peakTokens > 0 ? "tokens" : "sessions"
+  const maxValue = metric === "tokens" ? peakTokens : peakCount
   const days = daysWithDate.map(({ date: _date, ...day }) => {
-    const value = peakTokens > 0 ? day.tokens : day.count
+    const value = metric === "tokens" ? day.tokens : day.count
     const level = maxValue === 0 || value === 0 ? 0 : Math.max(1, Math.ceil((value / maxValue) * 4))
     return {
       ...day,
@@ -241,6 +242,7 @@ export function buildHomeActivity(
     days,
     months: buildMonthLabels(daysWithDate),
     weekCount: HOME_ACTIVITY_WEEKS,
+    metric,
     totalTokens,
     peakTokens,
     longestTaskMs,
