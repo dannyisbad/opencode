@@ -26,7 +26,7 @@ export function TerminalPanel() {
   const terminal = useTerminal()
   const language = useLanguage()
   const command = useCommand()
-  const { params, workspaceKey, view } = useSessionLayout()
+  const { params, view } = useSessionLayout()
 
   const opened = createMemo(() => view().terminal.opened())
   const size = createSizing()
@@ -37,7 +37,6 @@ export function TerminalPanel() {
   const [store, setStore] = createStore({
     autoCreated: false,
     activeDraggable: undefined as string | undefined,
-    recovered: {} as Record<string, boolean>,
     view: typeof window === "undefined" ? 1000 : (window.visualViewport?.height ?? window.innerHeight),
   })
 
@@ -66,13 +65,39 @@ export function TerminalPanel() {
     setStore("autoCreated", true)
   })
 
+  // Auto-open terminal panel when agent creates a new PTY session
   createEffect(
     on(
       () => terminal.all().length,
       (count, prevCount) => {
-        if (prevCount === undefined || prevCount <= 0 || count !== 0) return
-        if (!opened()) return
-        close()
+        if (prevCount === undefined || count <= prevCount) return
+        const all = terminal.all()
+        const last = all[all.length - 1]
+        if (last?.source !== "agent") return
+        if (!opened()) view().terminal.open()
+        terminal.open(last.id)
+      },
+    ),
+  )
+
+  // Close terminal panel when last terminal disappears
+  createEffect(
+    on(
+      () => terminal.all().length,
+      (count, prevCount) => {
+        if (prevCount === undefined || count !== 0 || prevCount === 0) return
+        if (opened()) view().terminal.close()
+      },
+    ),
+  )
+
+  createEffect(
+    on(
+      () => [opened(), terminal.active()] as const,
+      ([next, id]) => {
+        if (!next || !id) return
+        const stop = focus(id)
+        onCleanup(stop)
       },
     ),
   )
@@ -100,17 +125,6 @@ export function TerminalPanel() {
     }
   }
 
-  createEffect(
-    on(
-      () => [opened(), terminal.active()] as const,
-      ([next, id]) => {
-        if (!next || !id) return
-        const stop = focus(id)
-        onCleanup(stop)
-      },
-    ),
-  )
-
   createEffect(() => {
     if (opened()) return
     const active = document.activeElement
@@ -126,7 +140,7 @@ export function TerminalPanel() {
     language.locale()
 
     setTerminalHandoff(
-      workspaceKey(),
+      dir,
       terminal.all().map((pty) =>
         terminalTabLabel({
           title: pty.title,
@@ -140,26 +154,11 @@ export function TerminalPanel() {
   const handoff = createMemo(() => {
     const dir = params.dir
     if (!dir) return []
-    return getTerminalHandoff(workspaceKey()) ?? []
+    return getTerminalHandoff(dir) ?? []
   })
 
   const all = terminal.all
   const ids = createMemo(() => all().map((pty) => pty.id))
-
-  const recoverTerminal = (key: string, id: string, clone: (id: string) => Promise<void>) => {
-    if (store.recovered[key]) return
-    setStore("recovered", key, true)
-    void clone(id)
-  }
-
-  const terminalRecoveryKey = (pty: { id: string; title: string; titleNumber: number }) => {
-    return String(pty.titleNumber || pty.title || pty.id)
-  }
-
-  const markTerminalConnected = (key: string, id: string, trim: (id: string) => void) => {
-    setStore("recovered", key, false)
-    trim(id)
-  }
 
   const handleTerminalDragStart = (event: unknown) => {
     const id = getDraggableId(event)
@@ -296,9 +295,9 @@ export function TerminalPanel() {
                             <Terminal
                               pty={pty()}
                               autoFocus={opened()}
-                              onConnect={() => markTerminalConnected(terminalRecoveryKey(pty()), id, ops.trim)}
+                              onConnect={() => ops.trim(id)}
                               onCleanup={ops.update}
-                              onConnectError={() => recoverTerminal(terminalRecoveryKey(pty()), id, ops.clone)}
+                              onConnectError={() => ops.clone(id)}
                             />
                           </div>
                         )}
