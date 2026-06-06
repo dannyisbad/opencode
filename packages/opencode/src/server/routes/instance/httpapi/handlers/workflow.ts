@@ -1,9 +1,15 @@
 import { Workflow } from "@/workflow/workflow"
+import { Config } from "@/config/config"
+import { InstanceState } from "@/effect/instance-state"
 import { SessionPrompt } from "@/session/prompt"
+import { Session } from "@/session/session"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { type StartPayload, WorkflowApiError } from "../groups/workflow"
+import { type GeneratePayload, type StartPayload, WorkflowApiError } from "../groups/workflow"
+import path from "path"
+import { planDynamicWorkflow } from "@/workflow/planner"
 
 function apiError(error: Workflow.InvalidError | Workflow.NotFoundError) {
   if (error._tag === "WorkflowInvalidError")
@@ -15,6 +21,9 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
   Effect.gen(function* () {
     const workflow = yield* Workflow.Service
     const prompt = yield* SessionPrompt.Service
+    const config = yield* Config.Service
+    const fs = yield* FSUtil.Service
+    const sessions = yield* Session.Service
 
     const list = Effect.fn("WorkflowHttpApi.list")(function* () {
       // list() never fails (broken files are reported as invalid entries), so no
@@ -48,6 +57,42 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
         .pipe(Effect.mapError(apiError))
     })
 
+    const generate = Effect.fn("WorkflowHttpApi.generate")(function* (ctx: { payload: GeneratePayload }) {
+      const cfg = yield* config.get()
+      if (cfg.dynamic_workflows?.enabled !== true) {
+        return yield* Effect.fail(new WorkflowApiError({ message: "Dynamic workflows are disabled in config" }))
+      }
+      const instance = yield* InstanceState.context
+      const projectRoot = instance.worktree === "/" ? instance.directory : instance.worktree
+      const dynamicDir = path.join(projectRoot, ".opencode", "workflows", ".dynamic")
+      const runId = Workflow.RunID.ascending()
+      const workflowName = `dynamic-${runId.slice(0, 8)}`
+      const filepath = path.join(dynamicDir, `${workflowName}.ts`)
+      const plannerSession = yield* sessions.create({ title: `Workflow planner: ${ctx.payload.objective}` })
+      const plan = yield* planDynamicWorkflow({
+        prompt,
+        sessionID: plannerSession.id,
+        objective: ctx.payload.objective,
+        model: ctx.payload.model as { providerID: any; modelID: any } | undefined,
+        agent: ctx.payload.agent,
+        variant: ctx.payload.variant,
+      }).pipe(Effect.mapError((error) => new WorkflowApiError({ message: error instanceof Error ? error.message : String(error) })))
+      yield* fs
+        .writeWithDirs(filepath, plan.source)
+        .pipe(Effect.mapError((error) => new WorkflowApiError({ message: String(error) })))
+      return yield* workflow
+        .start({
+          name: workflowName,
+          args: ctx.payload.args,
+          budget: ctx.payload.budget,
+          permissionSessionID: ctx.payload.permissionSessionID,
+          prompt,
+          source: plan.source,
+          temporary: true,
+        })
+        .pipe(Effect.mapError(apiError))
+    })
+
     const cancel = Effect.fn("WorkflowHttpApi.cancel")(function* (ctx: { params: { id: Workflow.RunID } }) {
       return (yield* workflow.cancel(ctx.params.id)) ?? null
     })
@@ -61,6 +106,7 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
       .handle("runs", runs)
       .handle("get", get)
       .handle("start", start)
+      .handle("generate", generate)
       .handle("cancel", cancel)
       .handle("remove", remove)
   }),

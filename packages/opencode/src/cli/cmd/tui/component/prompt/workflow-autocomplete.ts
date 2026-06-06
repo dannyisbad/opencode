@@ -16,6 +16,19 @@ export const WORKFLOW_COMMAND_PREFIX = "/workflow "
 const WORKFLOW_COMMAND_PATTERN = /^\/workflow\s+(\S*)$/
 const WORKFLOW_ARG_PATTERN = /^\/workflow\s+(\S+)(?:\s+(.*))?$/
 const WORKFLOW_COMMAND_ALIASES = ["/workflow "]
+const DYNAMIC_WORKFLOW_KEYWORD_PATTERN = /\b(?:ultracode|workflow|workflows)\b/i
+
+export function parseDynamicWorkflowObjective(input: string) {
+  const trimmed = input.trim()
+  if (trimmed === "/workflow") return undefined
+  if (!trimmed.startsWith("/workflow")) return undefined
+  const rest = trimmed.slice("/workflow".length).trimStart()
+  return rest.length > 0 ? rest : undefined
+}
+
+export function shouldPreferDynamicWorkflow(input: string) {
+  return DYNAMIC_WORKFLOW_KEYWORD_PATTERN.test(input)
+}
 
 export function workflowNameQuery(input: string, cursorOffset: number) {
   return input.slice(0, cursorOffset).match(WORKFLOW_COMMAND_PATTERN)?.[1]
@@ -61,27 +74,15 @@ export function workflowArgContext(input: string, cursorOffset: number): Workflo
 }
 
 export function workflowNameOptions(input: TextareaRenderable, workflows: WorkflowInfo[]): AutocompleteOption[] {
-  return workflows.map((workflow): AutocompleteOption => ({
-    display: workflow.name,
-    value: workflow.name,
-    description: workflow.meta.description ?? workflow.meta.name,
-    onSelect: () => {
-      const cursorOffset = input.cursorOffset
-      input.cursorOffset = WORKFLOW_COMMAND_PREFIX.length
-      const start = input.logicalCursor
-      input.cursorOffset = cursorOffset
-      const end = input.logicalCursor
-      input.deleteRange(start.row, start.col, end.row, end.col)
-      input.insertText(`${workflow.name} `)
-      input.cursorOffset = Bun.stringWidth(`${WORKFLOW_COMMAND_PREFIX}${workflow.name} `)
-    },
-  }))
+  void input
+  void workflows
+  return []
 }
 
 export function workflowCommandOption(input: TextareaRenderable): AutocompleteOption {
   return {
     display: "/workflow",
-    description: "Start a workflow by name",
+    description: "Start a dynamic workflow from an objective",
     onSelect: () => {
       const cursor = input.logicalCursor
       input.deleteRange(0, 0, cursor.row, cursor.col)
@@ -129,14 +130,10 @@ export function workflowOptions(input: TextareaRenderable, workflows: WorkflowIn
   arg: WorkflowArgContext | undefined
   name: string | undefined
 }) {
-  if (inputState.arg) {
-    return workflowArgOptions(
-      input,
-      inputState.arg,
-      workflows.find((item) => item.name === inputState.arg?.workflow),
-    )
-  }
-  if (inputState.name !== undefined) return workflowNameOptions(input, workflows)
+  void input
+  void workflows
+  void inputState
+  return undefined
 }
 
 export async function listWorkflowInfos(workflow: WorkflowClient, enabled: boolean) {

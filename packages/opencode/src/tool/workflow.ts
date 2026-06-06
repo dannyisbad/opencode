@@ -14,6 +14,8 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Tool from "./tool"
 import { trimDiff } from "./edit"
 import { Workflow } from "@/workflow/workflow"
+import { planDynamicWorkflow } from "@/workflow/planner"
+import { Config } from "@/config/config"
 
 const WORKFLOW_NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const DEFAULT_TIMEOUT = 60 * 60 * 1000
@@ -388,6 +390,7 @@ export const WorkflowTool = Tool.define(
     const events = yield* EventV2Bridge.Service
     const format = yield* Format.Service
     const lsp = yield* LSP.Service
+    const config = yield* Config.Service
     const scope = yield* Scope.Scope
     return {
       description: DESCRIPTION,
@@ -501,6 +504,10 @@ export const WorkflowTool = Tool.define(
 
           if (params.action === "generate") {
             if (!params.objective) return yield* Effect.fail(new Error("objective is required for action=generate"))
+            const cfg = yield* config.get()
+            if (cfg.dynamic_workflows?.enabled !== true) {
+              return yield* Effect.fail(new Error("Dynamic workflows are disabled in config"))
+            }
             const ops = promptOps(ctx)
             const instance = yield* InstanceState.context
             const projectRoot = instance.worktree === "/" ? instance.directory : instance.worktree
@@ -516,146 +523,12 @@ export const WorkflowTool = Tool.define(
               metadata: { objective: params.objective, workflowName },
             })
 
-            // Build planner prompt
-            const plannerPrompt = [
-              "You are a workflow planner for OpenCode. Generate a TypeScript workflow file that solves the following objective.",
-              "",
-              `Objective: ${params.objective}`,
-              "",
-              "Generate a workflow using the `workflow()` helper from `@opencode-ai/plugin`. The workflow should:",
-              "1. Define clear phases that track progress",
-              "2. Use ctx.agent() for steps that need model reasoning",
-              "3. Use ctx.parallel() for independent steps that can run concurrently",
-              "4. Use ctx.synthesize() to combine multiple agent outputs",
-              "5. Use ctx.adversarial() for verification when quality matters",
-              "6. Use ctx.loop() for iterative refinement",
-              "7. Use ctx.forEach() for batch processing",
-              "8. Use ctx.pipeline() for sequential multi-stage processing",
-              "9. Log progress with ctx.log() at each major step",
-              "10. Set phases with ctx.setPhase() to track progress",
-              "",
-              "Available ContextApi methods:",
-              "- ctx.agent({ agent?, model?, prompt, schema? }) → { data, text }",
-              "- ctx.parallel(tasks, { concurrencyLimit? }) → results[]",
-              "- ctx.pipeline(items, stage1, stage2, ..., { concurrencyLimit? }) → results[]",
-              "- ctx.synthesize({ agents, prompt?, model?, agent? }) → { data, text }",
-              "- ctx.adversarial({ worker, rubric?, verifierPrompt?, verifierModel?, verifierAgent? }) → { worker, verification }",
-              "- ctx.loop({ fn, until, maxIterations? }) → results[]",
-              "- ctx.forEach(items, fn, { concurrencyLimit? }) → results[]",
-              "- ctx.setPhase(phase) → void",
-              "- ctx.log(message) → void",
-              "",
-              "WORKFLOW PATTERNS (choose the best pattern for the objective):",
-              "",
-              "Pattern A: Fan-Out Research (for investigation, audits, analysis)",
-              "- Phase 1: Scout agent maps the territory",
-              "- Phase 2: Parallel specialist agents investigate from different angles",
-              "- Phase 3: Cross-check agents verify findings",
-              "- Phase 4: Synthesize agent combines into final report",
-              "",
-              "Pattern B: Batch Processing (for migrations, refactors, applying changes to many files)",
-              "- Phase 1: Discovery agent finds all targets",
-              "- Phase 2: forEach with concurrencyLimit processes items in batches",
-              "- Phase 3: Verification agent checks consistency",
-              "- Phase 4: Summary agent reports results",
-              "",
-              "Pattern C: Iterative Refinement (for optimization, fixing, polishing)",
-              "- Phase 1: Initial assessment",
-              "- Phase 2: loop() with until condition for iterative improvement",
-              "- Phase 3: Final verification",
-              "",
-              "Pattern D: Pipeline Processing (for multi-stage transformations)",
-              "- Phase 1: ctx.pipeline with sequential stages",
-              "- Phase 2: Each stage transforms output of previous",
-              "- Phase 3: Final validation",
-              "",
-              "Pattern E: Adversarial Verification (for security audits, code review, critical changes)",
-              "- Phase 1: Worker agent produces output",
-              "- Phase 2: Independent verifier checks against rubric",
-              "- Phase 3: If issues found, loop to fix",
-              "- Phase 4: Final approval",
-              "",
-              "Return a JSON object with:",
-              "- name: display name for the workflow",
-              "- description: what the workflow does",
-              "- phases: array of phase names",
-              "- arguments: object defining any arguments (can be empty)",
-              "- source: the complete TypeScript source code for the workflow file",
-              "",
-              "The source must be a valid TypeScript file that imports `workflow` from `@opencode-ai/plugin` and exports default workflow({...}).",
-              "",
-              "EXAMPLE workflow structure:",
-              "```typescript",
-              "import { workflow } from '@opencode-ai/plugin'",
-              "",
-              "export default workflow({",
-              "  name: 'Example',",
-              "  description: '...',",
-              "  phases: ['plan', 'execute', 'verify'],",
-              "  async run(args, ctx) {",
-              "    ctx.setPhase('plan')",
-              "    const plan = await ctx.agent({ prompt: 'Plan the work' })",
-              "    ctx.log('Plan complete')",
-              "",
-              "    ctx.setPhase('execute')",
-              "    const results = await ctx.parallel([",
-              "      () => ctx.agent({ prompt: 'Task A' }),",
-              "      () => ctx.agent({ prompt: 'Task B' }),",
-              "    ])",
-              "",
-              "    ctx.setPhase('verify')",
-              "    const { verification } = await ctx.adversarial({",
-              "      worker: results[0],",
-              "      rubric: ['Criterion 1', 'Criterion 2'],",
-              "    })",
-              "",
-              "    return { plan: plan.text, results, verification }",
-              "  },",
-              "})",
-              "```",
-            ].join("\n")
-
-            const schema = {
-              type: "object" as const,
-              additionalProperties: false,
-              properties: {
-                name: { type: "string", description: "Display name for the workflow" },
-                description: { type: "string", description: "What the workflow does" },
-                phases: { type: "array", items: { type: "string" }, description: "Phase names" },
-                arguments: {
-                  type: "object" as const,
-                  additionalProperties: {
-                    type: "object" as const,
-                    properties: {
-                      type: { type: "string", enum: ["string", "number", "boolean"] },
-                      description: { type: "string" },
-                      default: {},
-                    },
-                  },
-                },
-                source: { type: "string", description: "Complete TypeScript source code" },
-              },
-              required: ["name", "description", "phases", "source"],
-            }
-
-            const plannerSession = yield* ops.prompt({
+            const plan = yield* planDynamicWorkflow({
+              prompt: ops,
               sessionID: ctx.sessionID,
-              agent: "plan",
-              parts: [{ type: "text", text: plannerPrompt }],
-              format: { type: "json_schema", schema },
+              objective: params.objective,
             })
-            const plannerResult =
-              plannerSession.info.role === "assistant"
-                ? (plannerSession.info.structured as Record<string, unknown> | undefined)
-                : undefined
-            if (!plannerResult) {
-              return yield* Effect.fail(new Error("Planner produced no structured output"))
-            }
-
-            const generatedSource = String(plannerResult.source ?? "")
-            if (!generatedSource.includes("workflow(")) {
-              return yield* Effect.fail(new Error("Planner did not generate a valid workflow source"))
-            }
+            const generatedSource = plan.source
 
             // Write the generated workflow to a temporary file
             yield* fs.writeWithDirs(filepath, generatedSource)

@@ -9,7 +9,7 @@ import {
   type Renderable,
 } from "@opentui/core"
 import type { CommandContext } from "@opentui/keymap"
-import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
+import { createEffect, createMemo, createResource, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
 import "opentui-spinner/solid"
 import path from "path"
 import { fileURLToPath } from "url"
@@ -37,7 +37,7 @@ import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import * as Editor from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import * as Clipboard from "../../util/clipboard"
-import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, FilePart, UserMessage, WorkflowRun } from "@opencode-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
 import { Locale } from "@/util/locale"
@@ -52,7 +52,7 @@ import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
 import { DialogWorkflow } from "../dialog-workflow"
-import { listWorkflowInfos, parseWorkflowArgs } from "./workflow-autocomplete"
+import { parseDynamicWorkflowObjective, shouldPreferDynamicWorkflow } from "./workflow-autocomplete"
 import {
   confirmWorkspaceFileChanges,
   openWorkspaceSelect,
@@ -216,6 +216,27 @@ export function Prompt(props: PromptProps) {
   const [cursorVersion, setCursorVersion] = createSignal(0)
   const currentProviderLabel = createMemo(() => local.model.parsed().provider)
   const hasRightContent = createMemo(() => Boolean(props.right))
+  const ultracodeEnabled = createMemo(() => kv.get("ultracode_enabled", false))
+  const dynamicWorkflowSystemPrompt =
+    "Dynamic workflows are preferred for this message. If the task is substantive or would benefit from orchestration, use the workflow tool with action=\"generate\". Treat static workflows as legacy/manual unless the user explicitly asks for a pre-existing named workflow."
+  const [workflowRuns, { refetch: refetchWorkflowRuns }] = createResource(
+    () => Boolean(props.visible),
+    async (visible: boolean) => {
+      if (!visible) return [] as WorkflowRun[]
+      const result = await sdk.client.workflow.runs()
+      return result.data ?? []
+    },
+    { initialValue: [] as WorkflowRun[] },
+  )
+  const runningDynamicWorkflows = createMemo(() =>
+    workflowRuns().filter((run: WorkflowRun) => run.status === "running" && run.definition?.temporary === true),
+  )
+
+  createEffect(() => {
+    if (!props.visible) return
+    const interval = setInterval(() => void refetchWorkflowRuns(), 1000)
+    onCleanup(() => clearInterval(interval))
+  })
 
   function promptModelWarning() {
     toast.show({
@@ -1097,6 +1118,10 @@ export function Prompt(props: PromptProps) {
           ]
         : []
 
+    const dynamicObjective = parseDynamicWorkflowObjective(inputText)
+    const preferDynamicWorkflow = ultracodeEnabled() || shouldPreferDynamicWorkflow(inputText)
+    const systemPrompt = preferDynamicWorkflow ? dynamicWorkflowSystemPrompt : undefined
+
     if (store.mode === "shell") {
       move.startSubmit()
       void sdk.client.session.shell({
@@ -1112,27 +1137,25 @@ export function Prompt(props: PromptProps) {
     } else if (inputText.trim() === "/workflows") {
       dialog.replace(() => <DialogWorkflow />)
     } else if (inputText.startsWith("/workflow")) {
-      const firstLine = inputText.split("\n")[0]
-      const [, name, ...args] = firstLine.split(" ").filter(Boolean)
-      if (!name) {
+      if (!dynamicObjective) {
         dialog.replace(() => <DialogWorkflow />)
       } else {
-        // Resolve the workflow's declared argument types so parsing coerces only
-        // declared-number args (e.g. `version=1.0` stays the string "1.0").
-        // listWorkflowInfos already drops invalid entries, so a broken file never
-        // supplies a synthesized meta here; an unknown name simply yields no
-        // declaration and every arg stays a string (the safe default).
-        const infos = await listWorkflowInfos(sdk.client.workflow, true)
-        const declaration = infos.find((info) => info.name === name)?.meta.arguments ?? {}
-        void sdk.client.workflow
-          .start({ name, workflowStartPayload: { args: parseWorkflowArgs(args.join(" "), declaration) } })
-          .then((result) => {
-            if (!result.data) {
-              toast.show({ message: `Failed to start workflow ${name}`, variant: "error" })
-              return
-            }
-            toast.show({ message: `Started workflow ${name}`, variant: "info" })
-            if (result.data.session_id) route.navigate({ type: "session", sessionID: result.data.session_id })
+        move.startSubmit()
+        sdk.fetch(new URL(`/workflow/generate?directory=${encodeURIComponent(sdk.directory ?? "")}`, sdk.url), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            objective: dynamicObjective,
+            permissionSessionID: sessionID,
+            model: selectedModel,
+            agent: agent.name,
+            variant,
+          }),
+        })
+          .then(async (response) => {
+            if (!response.ok) throw new Error(await response.text())
+            const run = (await response.json()) as { id?: string }
+            if (run.id) dialog.replace(() => <DialogWorkflow openRunID={run.id} />)
           })
           .catch(toast.error)
       }
@@ -1177,6 +1200,7 @@ export function Prompt(props: PromptProps) {
           agent: agent.name,
           model: selectedModel,
           variant,
+          system: systemPrompt,
           parts: [
             ...editorParts,
             {
@@ -1737,10 +1761,29 @@ export function Prompt(props: PromptProps) {
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
                 )}
               </Show>
-              <Show when={(sync.data.config as any).dynamic_workflows?.enabled}>
-                <text fg={theme.accent} wrapMode="none">
-                  <b>⚡ ultracode</b>
-                </text>
+              <Show when={ultracodeEnabled()}>
+                <box
+                  paddingLeft={1}
+                  paddingRight={1}
+                  backgroundColor={tint(theme.backgroundPanel, theme.accent, 0.22)}
+                  onMouseUp={() => kv.set("ultracode_enabled", false)}
+                >
+                  <text fg={theme.accent} wrapMode="none">
+                    <b>⚡ ultracode</b>
+                  </text>
+                </box>
+              </Show>
+              <Show when={runningDynamicWorkflows().length > 0}>
+                <box
+                  paddingLeft={1}
+                  paddingRight={1}
+                  backgroundColor={tint(theme.backgroundPanel, theme.primary, 0.18)}
+                  onMouseUp={() => dialog.replace(() => <DialogWorkflow openRunID={runningDynamicWorkflows()[0]?.id} />)}
+                >
+                  <text fg={theme.primary} wrapMode="none">
+                    <b>{runningDynamicWorkflows().length === 1 ? "workflow running" : `${runningDynamicWorkflows().length} workflows running`}</b>
+                  </text>
+                </box>
               </Show>
               <Switch>
                 <Match when={store.mode === "normal"}>

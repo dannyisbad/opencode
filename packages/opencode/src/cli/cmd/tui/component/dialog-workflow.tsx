@@ -356,7 +356,15 @@ export function DialogWorkflow(props?: { openRunID?: string; openPhase?: string;
     const [workflows, runs] = await Promise.all([sdk.client.workflow.list(), sdk.client.workflow.runs()])
     return {
       workflows: workflows.data ?? [],
-      runs: (runs.data ?? []).toSorted((a, b) => (timestamp(b.started_at) ?? 0) - (timestamp(a.started_at) ?? 0)),
+      runs: (runs.data ?? []).toSorted((a, b) => {
+        const aDynamic = a.definition?.temporary === true ? 1 : 0
+        const bDynamic = b.definition?.temporary === true ? 1 : 0
+        if (aDynamic !== bDynamic) return bDynamic - aDynamic
+        const aRunning = a.status === "running" ? 1 : 0
+        const bRunning = b.status === "running" ? 1 : 0
+        if (aRunning !== bRunning) return bRunning - aRunning
+        return (timestamp(b.started_at) ?? 0) - (timestamp(a.started_at) ?? 0)
+      }),
     }
   })
   const runs = createMemo(() => data()?.runs ?? [])
@@ -482,13 +490,13 @@ export function DialogWorkflow(props?: { openRunID?: string; openPhase?: string;
     >
       <box flexDirection="row" justifyContent="space-between">
         <text fg={theme.text} attributes={TextAttributes.BOLD}>
-          OpenCode Workflows
+          Workflow Monitor
         </text>
         <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
           esc
         </text>
       </box>
-      <text fg={theme.textMuted}>Select a run and press [Enter] to inspect phases, agents, and results.</text>
+      <text fg={theme.textMuted}>Dynamic runs first. Press [Enter] to inspect phases, agents, logs, and results.</text>
       <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
         {dashboardRowText(
           {
@@ -520,7 +528,7 @@ export function DialogWorkflow(props?: { openRunID?: string; openPhase?: string;
           fallback={
             <box paddingTop={1}>
               <text fg={theme.textMuted}>
-                No workflow runs yet. Start one with /workflow workflow_name --arg=value.
+                No workflow runs yet. Start one with /workflow followed by an objective.
               </text>
             </box>
           }
@@ -560,10 +568,10 @@ export function DialogWorkflow(props?: { openRunID?: string; openPhase?: string;
       <text fg={theme.textMuted}>{"─".repeat(tableWidth())}</text>
       <box flexDirection="row" justifyContent="space-between">
         <text fg={theme.textMuted}>
-          Spent this month: {formatCost(spentThisMonth())} | Active Background Workers: {activeWorkers()}
+          Spent this month: {formatCost(spentThisMonth())} | Active runs: {activeWorkers()}
         </text>
         <text fg={theme.textMuted}>
-          [Enter] View Details | [X] Kill workflow run | [D] Delete history | [Esc]/[B] Exit
+          [Enter] Inspect | [X] Kill run | [D] Delete history | [Esc]/[B] Exit
         </text>
       </box>
     </box>

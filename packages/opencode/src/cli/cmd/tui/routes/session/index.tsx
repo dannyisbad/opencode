@@ -1131,6 +1131,23 @@ export function Session() {
       },
     },
     {
+      title: kv.get("ultracode_enabled", false) ? "Disable ultracode" : "Enable ultracode",
+      value: "session.ultracode.toggle",
+      category: "Session",
+      slash: {
+        name: "ultracode",
+      },
+      run: () => {
+        const next = !kv.get("ultracode_enabled", false)
+        kv.set("ultracode_enabled", next)
+        toast.show({
+          message: next ? "Ultracode enabled for this TUI session" : "Ultracode disabled",
+          variant: "info",
+        })
+        dialog.clear()
+      },
+    },
+    {
       title: "Open workflow details",
       value: "session.workflow.open",
       category: "Session",
@@ -2231,7 +2248,7 @@ function WorkflowCall(props: ToolProps<typeof WorkflowTool>) {
   })
 
   const content = createMemo(() => {
-    if (props.input.action !== "start") return undefined
+    if (props.input.action !== "start" && props.input.action !== "generate") return undefined
     const label = current()?.definition?.meta.name ?? meta().workflow ?? props.input.name ?? "Workflow"
     const lines = [meta().background ? `${label} (background)` : label]
     if (isRunning()) {
@@ -2249,7 +2266,7 @@ function WorkflowCall(props: ToolProps<typeof WorkflowTool>) {
     return lines.join("\n")
   })
 
-  if (props.input.action !== "start") return <GenericTool {...props} />
+  if (props.input.action !== "start" && props.input.action !== "generate") return <GenericTool {...props} />
 
   return (
     <InlineTool
@@ -2257,7 +2274,7 @@ function WorkflowCall(props: ToolProps<typeof WorkflowTool>) {
       color={theme.textMuted}
       spinner={isRunning()}
       complete={meta().workflow ?? props.input.name ?? props.input.action}
-      pending="Starting workflow..."
+      pending={props.input.action === "generate" ? "Generating workflow..." : "Starting workflow..."}
       part={props.part}
       onClick={() => {
         if (!meta().runId) return

@@ -1,5 +1,7 @@
 import { SessionID } from "@/session/schema"
 import { Workflow } from "@/workflow/workflow"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
@@ -23,6 +25,22 @@ export const StartPayload = Schema.Struct({
 }).annotate({ identifier: "WorkflowStartPayload" })
 export type StartPayload = Schema.Schema.Type<typeof StartPayload>
 
+export const GeneratePayload = Schema.Struct({
+  objective: Schema.String,
+  args: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  budget: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  permissionSessionID: Schema.optional(SessionID),
+  model: Schema.optional(
+    Schema.Struct({
+      providerID: ProviderV2.ID,
+      modelID: ModelV2.ID,
+    }),
+  ),
+  agent: Schema.optional(Schema.String),
+  variant: Schema.optional(Schema.String),
+}).annotate({ identifier: "WorkflowGeneratePayload" })
+export type GeneratePayload = Schema.Schema.Type<typeof GeneratePayload>
+
 export class WorkflowApiError extends Schema.TaggedErrorClass<WorkflowApiError>()(
   "WorkflowApiError",
   {
@@ -37,6 +55,7 @@ export const WorkflowPaths = {
   runs: `${root}/run`,
   get: `${root}/run/:id`,
   start: `${root}/:name/start`,
+  generate: `${root}/generate`,
   cancel: `${root}/run/:id/cancel`,
   remove: `${root}/run/:id`,
 } as const
@@ -91,6 +110,18 @@ export const WorkflowApi = HttpApi.make("workflow")
             identifier: "workflow.start",
             summary: "Start workflow",
             description: "Start a workflow execution run.",
+          }),
+        ),
+        HttpApiEndpoint.post("generate", WorkflowPaths.generate, {
+          query: WorkspaceRoutingQuery,
+          payload: GeneratePayload,
+          success: described(Workflow.Run, "Generated workflow run started"),
+          error: WorkflowApiError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "workflow.generate",
+            summary: "Generate and start dynamic workflow",
+            description: "Generate a dynamic workflow from an objective and start it immediately.",
           }),
         ),
         HttpApiEndpoint.post("cancel", WorkflowPaths.cancel, {
