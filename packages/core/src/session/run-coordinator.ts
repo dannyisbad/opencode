@@ -39,13 +39,14 @@ export interface Coordinator<Key, A, E> {
 /** One Session's process-local execution lane: one active demand and at most one coalesced follow-up. */
 type Entry<A, E> = {
   readonly done: Deferred.Deferred<A, E>
-  readonly settled: Deferred.Deferred<Exit.Exit<A, E>>
+  readonly settled: Deferred.Deferred<Exit.Exit<A, E> | undefined>
   current: Demand
   pending?: Demand
   explicitWaiter?: Deferred.Deferred<A, E>
   interruptSeq?: number
   owner?: Fiber.Fiber<void, never>
   stopping: boolean
+  advisoryRetryAvailable: boolean
 }
 
 /** Combines follow-up demand: runs dominate, while wakes retain the newest durable admission sequence. */
@@ -63,7 +64,11 @@ const maxSeq = (left: number | undefined, right: number | undefined) => {
 /** Constructs a scoped coordinator. Every in-memory transition is synchronous. */
 export const make = <Key, A, E>(options: {
   readonly drain: (key: Key, mode: Mode) => Effect.Effect<A, E>
-  readonly onFailure?: (key: Key, cause: Cause.Cause<E>) => Effect.Effect<void>
+  readonly onFailure?: (
+    key: Key,
+    cause: Cause.Cause<E>,
+    context: { readonly mode: "wake"; readonly seq?: number },
+  ) => Effect.Effect<void>
 }): Effect.Effect<Coordinator<Key, A, E>, never, Scope.Scope> =>
   Effect.gen(function* () {
     const active = new Map<Key, Entry<A, E>>()
@@ -81,12 +86,16 @@ export const make = <Key, A, E>(options: {
       }),
     )
 
-    const makeEntry = (current: Demand, explicitWaiter?: Deferred.Deferred<A, E>): Entry<A, E> => ({
+    const makeEntry = (current: Demand, options?: {
+      readonly explicitWaiter?: Deferred.Deferred<A, E>
+      readonly advisoryRetryAvailable?: boolean
+    }): Entry<A, E> => ({
       done: Deferred.makeUnsafe<A, E>(),
-      settled: Deferred.makeUnsafe<Exit.Exit<A, E>>(),
+      settled: Deferred.makeUnsafe<Exit.Exit<A, E> | undefined>(),
       current,
-      explicitWaiter,
+      explicitWaiter: options?.explicitWaiter,
       stopping: false,
+      advisoryRetryAvailable: options?.advisoryRetryAvailable ?? current._tag === "wake",
     })
 
     const start = (key: Key, entry: Entry<A, E>, demand: Demand, successor = false) => {
@@ -132,6 +141,7 @@ export const make = <Key, A, E>(options: {
           const pending = entry.pending
           entry.pending = undefined
           entry.current = pending
+          entry.advisoryRetryAvailable = pending._tag === "wake"
           start(key, entry, pending, true)
           return
         }
@@ -141,19 +151,26 @@ export const make = <Key, A, E>(options: {
         return
       }
 
-      const successor = entry.pending !== undefined ? makeEntry(entry.pending, entry.explicitWaiter) : undefined
+      const successor =
+        entry.pending !== undefined
+          ? makeEntry(entry.pending, { explicitWaiter: entry.explicitWaiter })
+          : exit._tag === "Failure" && demand._tag === "wake" && !entry.stopping && entry.advisoryRetryAvailable
+            ? makeEntry(demand, { explicitWaiter: entry.explicitWaiter, advisoryRetryAvailable: false })
+            : undefined
+      const retrying = successor !== undefined && entry.pending === undefined
       if (successor === undefined) active.delete(key)
       else active.set(key, successor)
       if (successor !== undefined) start(key, successor, successor.current, true)
       Deferred.doneUnsafe(entry.done, exit)
-      Deferred.doneUnsafe(entry.settled, Effect.succeed(exit))
+      Deferred.doneUnsafe(entry.settled, Effect.succeed(retrying ? undefined : exit))
       if (
         exit._tag === "Failure" &&
         !(entry.stopping && Cause.hasInterruptsOnly(exit.cause)) &&
         demand._tag === "wake" &&
+        successor === undefined &&
         options.onFailure !== undefined
       ) {
-        report(Effect.suspend(() => options.onFailure!(key, exit.cause)))
+        report(Effect.suspend(() => options.onFailure!(key, exit.cause, { mode: "wake", seq: demand.seq })))
       }
     }
 
@@ -184,7 +201,7 @@ export const make = <Key, A, E>(options: {
             Deferred.await(shutdown).pipe(Effect.as(Exit.void)),
           )
           if (closed) break
-          if (exit._tag === "Failure" && firstFailure === undefined) firstFailure = exit.cause
+          if (exit?._tag === "Failure" && firstFailure === undefined) firstFailure = exit.cause
         }
         if (firstFailure !== undefined) return yield* Effect.failCause(firstFailure)
       })

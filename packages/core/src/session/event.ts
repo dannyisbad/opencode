@@ -119,6 +119,23 @@ export namespace PromptLifecycle {
   export type Promoted = typeof Promoted.Type
 }
 
+export namespace Run {
+  export const Failed = EventV2.define({
+    type: "session.next.run.failed",
+    ...options,
+    schema: {
+      ...Base,
+      reason: Schema.Literals(["execution-failed", "step-limit-exceeded", "unknown"]),
+      input: Schema.Struct({
+        messageID: SessionMessageID.ID,
+        admittedSeq: NonNegativeInt,
+        promotedSeq: NonNegativeInt.pipe(Schema.optional),
+      }).pipe(Schema.optional),
+    },
+  })
+  export type Failed = typeof Failed.Type
+}
+
 export const InterruptRequested = EventV2.define({
   type: "session.next.interrupt.requested",
   ...options,
@@ -476,6 +493,7 @@ const DurableDefinitions = [
   Prompted,
   PromptLifecycle.Admitted,
   PromptLifecycle.Promoted,
+  Run.Failed,
   InterruptRequested,
   ContextUpdated,
   Synthetic,

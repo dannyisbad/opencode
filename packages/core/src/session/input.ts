@@ -47,6 +47,20 @@ export const find = Effect.fn("SessionInput.find")(function* (db: DatabaseServic
   return row === undefined ? undefined : fromRow(row)
 })
 
+export const findByAdmittedSeq = Effect.fn("SessionInput.findByAdmittedSeq")(function* (
+  db: DatabaseService,
+  sessionID: SessionSchema.ID,
+  admittedSeq: number,
+) {
+  const row = yield* db
+    .select()
+    .from(SessionInputTable)
+    .where(and(eq(SessionInputTable.session_id, sessionID), eq(SessionInputTable.admitted_seq, admittedSeq)))
+    .get()
+    .pipe(Effect.orDie)
+  return row === undefined ? undefined : fromRow(row)
+})
+
 export class LifecycleConflict extends Schema.TaggedErrorClass<LifecycleConflict>()("SessionInput.LifecycleConflict", {
   id: SessionMessage.ID,
 }) {}

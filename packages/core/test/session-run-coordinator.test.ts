@@ -33,7 +33,9 @@ describe("SessionRunCoordinator", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const drained = yield* Deferred.make<void>()
-        const coordinator = yield* SessionRunCoordinator.make({ drain: () => Deferred.succeed(drained, undefined) })
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () => Deferred.succeed(drained, undefined),
+        })
 
         yield* coordinator.wake("session")
         yield* Deferred.await(drained)
@@ -44,7 +46,9 @@ describe("SessionRunCoordinator", () => {
   it.effect("does nothing when interrupted while idle", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const coordinator = yield* SessionRunCoordinator.make({ drain: () => Effect.void })
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () => Effect.void,
+        })
 
         yield* coordinator.interrupt("session")
       }),
@@ -55,7 +59,9 @@ describe("SessionRunCoordinator", () => {
     Effect.scoped(
       Effect.gen(function* () {
         let runs = 0
-        const coordinator = yield* SessionRunCoordinator.make({ drain: () => Effect.sync(() => runs++) })
+        const coordinator = yield* SessionRunCoordinator.make({
+          drain: () => Effect.sync(() => runs++),
+        })
 
         yield* coordinator.interrupt("session", 2)
         yield* coordinator.wake("session", 1)
@@ -722,6 +728,36 @@ describe("SessionRunCoordinator", () => {
     ),
   )
 
+  it.effect("retries a failed advisory successor once without another wake", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstGate = yield* Deferred.make<void>()
+        let runs = 0
+        const failure = new Error("transient wake failure")
+        const coordinator = yield* SessionRunCoordinator.make<string, void, Error>({
+          drain: () =>
+            Effect.sync(() => ++runs).pipe(
+              Effect.flatMap((run) =>
+                run === 1
+                  ? Deferred.await(firstGate).pipe(Effect.andThen(Effect.fail(failure)))
+                  : run === 2
+                    ? Effect.fail(failure)
+                    : Effect.void,
+              ),
+            ),
+        })
+
+        yield* coordinator.wake("session", 1)
+        yield* coordinator.wake("session", 2)
+        yield* Deferred.succeed(firstGate, undefined)
+          const idle = yield* coordinator.awaitIdle("session").pipe(Effect.exit)
+
+          expect(runs).toBe(3)
+          expect(Exit.isSuccess(idle)).toBeTrue()
+      }),
+    ),
+  )
+
   it.effect("upgrades an active wake when an explicit run joins it", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -916,8 +952,9 @@ describe("SessionRunCoordinator", () => {
         const failure = new Error("wake failed")
         const reported: Cause.Cause<Error>[] = []
         const reportedOnce = yield* Deferred.make<void>()
+        let runs = 0
         const coordinator = yield* SessionRunCoordinator.make<string, void, Error>({
-          drain: () => Effect.fail(failure),
+          drain: () => Effect.sync(() => runs++).pipe(Effect.andThen(Effect.fail(failure))),
           onFailure: (_key, cause) =>
             Effect.sync(() => reported.push(cause)).pipe(Effect.andThen(Deferred.succeed(reportedOnce, undefined))),
         })
@@ -927,6 +964,7 @@ describe("SessionRunCoordinator", () => {
         yield* Effect.yieldNow
 
         expect(reported).toHaveLength(1)
+        expect(runs).toBe(2)
         expect(Cause.squash(reported[0]!)).toBe(failure)
       }),
     ),
