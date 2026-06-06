@@ -66,6 +66,17 @@ export function dynamicWorkflowPlannerPrompt(objective: string) {
     "",
     "The source must be a valid TypeScript file that exports `meta` and `run(args, ctx)` directly.",
     "Prefer small, boring workflows over fancy ones. Use the fewest primitives needed.",
+    "",
+    "CRITICAL: Your source MUST start with exactly this structure:",
+    "export const meta = {",
+    "  name: 'Workflow Name',",
+    "  description: 'Description',",
+    "  phases: ['Phase 1']",
+    "}",
+    "",
+    "export async function run(args: any, ctx: any) {",
+    "  // your code here",
+    "}"
   ].join("\n")
 }
 
