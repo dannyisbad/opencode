@@ -131,6 +131,7 @@ const sessionBindingCommands = [
   "session.compact",
   "session.unshare",
   "session.undo",
+  "session.sundo",
   "session.redo",
   "session.sidebar.toggle",
   "session.toggle.conceal",
@@ -670,6 +671,44 @@ export function Session() {
           .revert({
             sessionID: route.sessionID,
             messageID: message.id,
+          })
+          .then(() => {
+            toBottom()
+          })
+        const parts = sync.data.part[message.id]
+        prompt?.set(
+          parts.reduce(
+            (agg, part) => {
+              if (part.type === "text") {
+                if (!part.synthetic) agg.input += part.text
+              }
+              if (part.type === "file") agg.parts.push(part)
+              return agg
+            },
+            { input: "", parts: [] as PromptInfo["parts"] },
+          ),
+        )
+        dialog.clear()
+      },
+    },
+    {
+      title: "Soft undo previous message (keep file changes)",
+      value: "session.sundo",
+      category: "Session",
+      slash: {
+        name: "sundo",
+      },
+      run: async () => {
+        const status = sync.data.session_status?.[route.sessionID]
+        if (status?.type !== "idle") await sdk.client.session.abort({ sessionID: route.sessionID }).catch(() => {})
+        const revert = session()?.revert?.messageID
+        const message = messages().findLast((x) => (!revert || x.id < revert) && x.role === "user")
+        if (!message) return
+        void sdk.client.session
+          .revert({
+            sessionID: route.sessionID,
+            messageID: message.id,
+            soft: true,
           })
           .then(() => {
             toBottom()

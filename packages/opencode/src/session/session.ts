@@ -200,6 +200,7 @@ const Revert = Schema.Struct({
   partID: optionalOmitUndefined(PartID),
   snapshot: optionalOmitUndefined(Schema.String),
   diff: optionalOmitUndefined(Schema.String),
+  soft: optionalOmitUndefined(Schema.Boolean),
 })
 
 const Model = Schema.Struct({

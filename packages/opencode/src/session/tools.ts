@@ -16,7 +16,7 @@ import { Effect } from "effect"
 import { MessageV2 } from "./message-v2"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
-import { PartID, SessionID } from "./schema"
+import { MessageID, PartID, SessionID } from "./schema"
 import { Log } from "@opencode-ai/core/util/log"
 import { EffectBridge } from "@/effect/bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -29,7 +29,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   model: Provider.Model
   session: Session.Info
   permissionSessionID?: SessionID
-  processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
+  processor?: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
@@ -42,35 +42,38 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const registry = yield* ToolRegistry.Service
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
+  const messageID = input.processor?.message.id ?? MessageID.ascending()
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
     abort: options.abortSignal!,
-    messageID: input.processor.message.id,
+    messageID,
     callID: options.toolCallId,
     extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps: input.promptOps },
     agent: input.agent.name,
     messages: input.messages,
-    metadata: (val) =>
-      input.processor.updateToolCall(options.toolCallId, (match) => {
-        if (!["running", "pending"].includes(match.state.status)) return match
-        return {
-          ...match,
-          state: {
-            title: val.title,
-            metadata: val.metadata,
-            status: "running",
-            input: args,
-            time: { start: Date.now() },
-          },
-        }
-      }),
+    metadata: input.processor
+      ? (val) =>
+          input.processor!.updateToolCall(options.toolCallId, (match) => {
+            if (!["running", "pending"].includes(match.state.status)) return match
+            return {
+              ...match,
+              state: {
+                title: val.title,
+                metadata: val.metadata,
+                status: "running",
+                input: args,
+                time: { start: Date.now() },
+              },
+            }
+          })
+      : () => Effect.void,
     ask: (req) =>
       permission
         .ask({
           ...req,
           sessionID: input.permissionSessionID ?? input.session.id,
-          tool: { messageID: input.processor.message.id, callID: options.toolCallId },
+          tool: { messageID, callID: options.toolCallId },
           ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
         })
         .pipe(Effect.orDie),
@@ -101,7 +104,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
                 ...attachment,
                 id: PartID.ascending(),
                 sessionID: ctx.sessionID,
-                messageID: input.processor.message.id,
+                messageID,
               })),
             }
             yield* plugin.trigger(
@@ -109,7 +112,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID, args },
               output,
             )
-            if (options.abortSignal?.aborted) {
+            if (options.abortSignal?.aborted && input.processor) {
               yield* input.processor.completeToolCall(options.toolCallId, output)
             }
             return output
@@ -144,7 +147,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
                 "tool.name": key,
                 "tool.call_id": opts.toolCallId,
                 "session.id": ctx.sessionID,
-                "message.id": input.processor.message.id,
+                    "message.id": messageID,
               },
             }),
           )
@@ -193,11 +196,11 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               ...attachment,
               id: PartID.ascending(),
               sessionID: ctx.sessionID,
-              messageID: input.processor.message.id,
+              messageID,
             })),
             content: result.content,
           }
-          if (opts.abortSignal?.aborted) {
+          if (opts.abortSignal?.aborted && input.processor) {
             yield* input.processor.completeToolCall(opts.toolCallId, output)
           }
           return output
