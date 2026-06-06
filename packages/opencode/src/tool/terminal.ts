@@ -298,10 +298,18 @@ export const TerminalTool = Tool.define(
                 },
               })
 
+              const exitDeferred = yield* Deferred.make<
+                { kind: "exit"; code: number } | { kind: "timeout" } | { kind: "abort" }
+              >()
+
               let buffer = ""
 
               const mockWs = createMockSocket((chunk) => {
                 buffer += chunk
+                const { exit } = cleanOutput(buffer, params.command)
+                if (exit !== null) {
+                  Effect.runFork(Deferred.succeed(exitDeferred, { kind: "exit" as const, code: exit }))
+                }
                 Effect.runFork(
                   ctx.metadata({
                     metadata: {
@@ -330,10 +338,6 @@ export const TerminalTool = Tool.define(
               const sentinel = sentinelCommand(shell)
               conn.onMessage(params.command + "\n")
               conn.onMessage(sentinel + "\n")
-
-              const exitDeferred = yield* Deferred.make<
-                { kind: "exit"; code: number } | { kind: "timeout" } | { kind: "abort" }
-              >()
 
               yield* Effect.forkScoped(
                 events.listen((evt) => {
