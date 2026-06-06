@@ -1287,7 +1287,7 @@ export const layer = Layer.effect(
           if (task?.type === "compaction") {
             const compactionAgentInfo = yield* agents.get("compaction")
             const compactionModel = compactionAgentInfo?.model
-              ? yield* provider.getModel(compactionAgentInfo.model.providerID, compactionAgentInfo.model.modelID)
+              ? yield* provider.getModel(compactionAgentInfo.model.providerID, compactionAgentInfo.model.modelID).pipe(Effect.orDie)
               : model
             const originalUser = msgs.findLast(
               (m): m is SessionV1.WithParts & { info: SessionV1.User } =>
@@ -1310,6 +1310,7 @@ export const layer = Layer.effect(
               const originalAgent = originalUser ? yield* agents.get(originalUser.info.agent) : undefined
               if (originalAgent && originalUser) {
                 const bypassAgentCheck = originalUser.parts.some((p) => p.type === "agent")
+                const promptOps = yield* ops()
                 const [skills, env, instructions] = yield* Effect.all([
                   sys.skills(originalAgent),
                   sys.environment(model),
