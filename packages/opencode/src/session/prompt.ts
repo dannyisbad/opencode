@@ -1285,12 +1285,68 @@ export const layer = Layer.effect(
           }
 
           if (task?.type === "compaction") {
+            const compactionAgentInfo = yield* agents.get("compaction")
+            const compactionModel = compactionAgentInfo?.model
+              ? yield* provider.getModel(compactionAgentInfo.model.providerID, compactionAgentInfo.model.modelID)
+              : model
+            const originalUser = msgs.findLast(
+              (m): m is SessionV1.WithParts & { info: SessionV1.User } =>
+                m.info.role === "user" && !m.parts.some((p) => p.type === "compaction"),
+            )
+            const canReusePrefix =
+              originalUser?.info.format?.type !== "json_schema" &&
+              model.id === compactionModel.id &&
+              model.providerID === compactionModel.providerID
+
+            let resolved:
+              | {
+                  agent: Agent.Info
+                  system: string[]
+                  tools: Record<string, AITool>
+                  user: SessionV1.User
+                }
+              | undefined
+            if (canReusePrefix) {
+              const originalAgent = originalUser ? yield* agents.get(originalUser.info.agent) : undefined
+              if (originalAgent && originalUser) {
+                const bypassAgentCheck = originalUser.parts.some((p) => p.type === "agent")
+                const [skills, env, instructions] = yield* Effect.all([
+                  sys.skills(originalAgent),
+                  sys.environment(model),
+                  instruction.system().pipe(Effect.orDie),
+                ])
+                const system = [...env, ...instructions, ...(skills ? [skills] : [])]
+                const tools = yield* SessionTools.resolve({
+                  agent: originalAgent,
+                  session,
+                  permissionSessionID: input.permissionSessionID,
+                  model,
+                  bypassAgentCheck,
+                  messages: msgs,
+                  promptOps,
+                }).pipe(
+                  Effect.provideService(Plugin.Service, plugin),
+                  Effect.provideService(Permission.Service, permission),
+                  Effect.provideService(ToolRegistry.Service, registry),
+                  Effect.provideService(MCP.Service, mcp),
+                  Effect.provideService(Truncate.Service, truncate),
+                )
+                resolved = {
+                  agent: originalAgent,
+                  system,
+                  tools,
+                  user: originalUser.info,
+                }
+              }
+            }
+
             const result = yield* compaction.process({
               messages: msgs,
               parentID: lastUser.id,
               sessionID,
               auto: task.auto,
               overflow: task.overflow,
+              resolved,
             })
             if (result === "stop") break
             continue

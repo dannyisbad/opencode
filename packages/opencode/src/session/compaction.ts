@@ -4,6 +4,7 @@ import { Session } from "./session"
 import { SessionID, MessageID, PartID } from "./schema"
 import { Provider } from "@/provider/provider"
 import { MessageV2 } from "./message-v2"
+import { type Tool as AITool } from "ai"
 import { Token } from "@/util/token"
 import { Log } from "@opencode-ai/core/util/log"
 import { SessionProcessor } from "./processor"
@@ -151,6 +152,12 @@ export interface Interface {
     sessionID: SessionID
     auto: boolean
     overflow?: boolean
+    resolved?: {
+      agent: Agent.Info
+      system: string[]
+      tools: Record<string, AITool>
+      user: SessionV1.User
+    }
   }) => Effect.Effect<"continue" | "stop">
   readonly create: (input: {
     sessionID: SessionID
@@ -302,6 +309,12 @@ export const layer = Layer.effect(
       sessionID: SessionID
       auto: boolean
       overflow?: boolean
+      resolved?: {
+        agent: Agent.Info
+        system: string[]
+        tools: Record<string, AITool>
+        user: SessionV1.User
+      }
     }) {
       const parent = input.messages.findLast((m) => m.info.id === input.parentID)
       if (!parent || parent.info.role !== "user") {
@@ -342,10 +355,11 @@ export const layer = Layer.effect(
       const cfg = yield* config.get()
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
-      const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
+      const resolved = input.resolved
+      const hidden = resolved ? undefined : new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
       const previousSummary = prior.at(-1)?.summary
       const selected = yield* select({
-        messages: history.filter((_, index) => !hidden.has(index)),
+        messages: hidden ? history.filter((_, index) => !hidden.has(index)) : history,
         cfg,
         model,
       })
@@ -358,10 +372,11 @@ export const layer = Layer.effect(
       const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-      const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
-        stripMedia: true,
-        toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-      })
+      const modelMessages = yield* MessageV2.toModelMessagesEffect(
+        msgs,
+        model,
+        resolved ? undefined : { stripMedia: true, toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS },
+      )
       const tailIndex = selected.tail_start_id
         ? history.findIndex((message) => message.info.id === selected.tail_start_id)
         : -1
@@ -407,21 +422,43 @@ export const layer = Layer.effect(
         sessionID: input.sessionID,
         model,
       })
-      const result = yield* processor.process({
-        user: userMessage,
-        agent,
-        sessionID: input.sessionID,
-        tools: {},
-        system: [],
-        messages: [
-          ...modelMessages,
-          {
-            role: "user",
-            content: [{ type: "text", text: nextPrompt }],
-          },
-        ],
-        model,
-      })
+      const currentSession = resolved ? yield* session.get(input.sessionID).pipe(Effect.orDie) : undefined
+      const result = yield* processor.process(
+        resolved
+          ? {
+              user: resolved.user,
+              agent: resolved.agent,
+              sessionID: input.sessionID,
+              permission: currentSession?.permission,
+              parentSessionID: currentSession?.parentID,
+              system: resolved.system,
+              messages: [
+                ...modelMessages,
+                {
+                  role: "user",
+                  content: [{ type: "text", text: nextPrompt }],
+                },
+              ],
+              tools: resolved.tools,
+              model,
+              toolChoice: "none",
+            }
+          : {
+              user: userMessage,
+              agent,
+              sessionID: input.sessionID,
+              tools: {},
+              system: [],
+              messages: [
+                ...modelMessages,
+                {
+                  role: "user",
+                  content: [{ type: "text", text: nextPrompt }],
+                },
+              ],
+              model,
+            },
+      )
 
       if (result === "compact") {
         processor.message.error = new SessionV1.ContextOverflowError({
