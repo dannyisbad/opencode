@@ -32,6 +32,9 @@ import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import path from "path"
+import { Global } from "@opencode-ai/core/global"
+import { Ide } from "@/ide"
 
 const log = Log.create({ service: "mcp" })
 const DEFAULT_TIMEOUT = 30_000
@@ -559,6 +562,46 @@ export const layer = Layer.effect(
             }),
           { concurrency: "unbounded" },
         )
+
+        // Auto-discover IDE MCP server (VS Code extension).
+        // The extension writes a lock file containing its port and auth token when
+        // it starts; `Ide.discover` reads that file and validates the process is
+        // still running.  If discovery succeeds we connect directly — bypassing
+        // the config-driven create() flow — and register the client as "vscode".
+        const ideDir = path.join(Global.Path.data, "ide")
+        const discoverAndConnect = Effect.gen(function* () {
+          const ideInfo = yield* Effect.promise(() => Ide.discover(ideDir))
+          if (ideInfo) {
+            yield* Effect.tryPromise({
+              try: async () => {
+                const ideClient = await Ide.connectIde(ideInfo)
+                // Close existing client if present to prevent memory leaks
+                const existingClient = s.clients[Ide.IDE_CLIENT_KEY]
+                if (existingClient) {
+                  await existingClient.close().catch((error) => {
+                    log.error("Failed to close existing IDE MCP client", { error })
+                  })
+                }
+                s.clients[Ide.IDE_CLIENT_KEY] = ideClient
+                s.status[Ide.IDE_CLIENT_KEY] = { status: "connected" }
+                // Start receiving live editor context updates
+                await Ide.subscribeToContext(ideClient)
+              },
+              catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+            }).pipe(
+              Effect.catch((error) => {
+                log.error("failed to connect to IDE MCP server", { error })
+                s.status[Ide.IDE_CLIENT_KEY] = {
+                  status: "failed" as const,
+                  error: error.message,
+                }
+                return Effect.void
+              }),
+            )
+          }
+        })
+
+        yield* discoverAndConnect.pipe(Effect.catch(() => Effect.void))
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {

@@ -33,6 +33,8 @@ import { emptyConsoleState, type ConsoleState } from "@opencode-ai/core/v1/confi
 import path from "path"
 import { useKV } from "./kv"
 import { aggregateFailures } from "./aggregate-failures"
+import { Ide } from "@/ide"
+
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -78,6 +80,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       formatter: FormatterStatus[]
       vcs: VcsInfo | undefined
+      ide_context: Ide.EditorContext
     }>({
       provider_next: {
         all: [],
@@ -105,6 +108,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       mcp_resource: {},
       formatter: [],
       vcs: undefined,
+      ide_context: {},
     })
 
     const event = useEvent()
@@ -396,6 +400,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (workspace === project.workspace.current()) {
             setStore("vcs", { branch: event.properties.branch })
           }
+          break
+        }
+
+        case "ide.context.updated": {
+          setStore("ide_context", reconcile(event.properties as unknown as Ide.EditorContext))
           break
         }
       }

@@ -21,6 +21,7 @@ export type Event =
   | EventSessionNextPrompted
   | EventSessionNextPromptAdmitted
   | EventSessionNextPromptPromoted
+  | EventSessionNextRunFailed
   | EventSessionNextInterruptRequested
   | EventSessionNextContextUpdated
   | EventSessionNextSynthetic
@@ -73,6 +74,8 @@ export type Event =
   | EventTuiCommandExecute2
   | EventTuiToastShow2
   | EventTuiSessionSelect2
+  | EventIdeInstalled
+  | EventIdeContextUpdated
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
@@ -871,6 +874,20 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.next.run.failed"
+        properties: {
+          timestamp: number
+          sessionID: string
+          reason: "execution-failed" | "step-limit-exceeded" | "unknown"
+          input?: {
+            messageID: string
+            admittedSeq: number
+            promotedSeq?: number
+          }
+        }
+      }
+    | {
+        id: string
         type: "session.next.interrupt.requested"
         properties: {
           timestamp: number
@@ -1458,6 +1475,31 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "ide.installed"
+        properties: {
+          ide: string
+        }
+      }
+    | {
+        id: string
+        type: "ide.context.updated"
+        properties: {
+          uri?: string
+          selection?: {
+            start: {
+              line: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+              column: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+            }
+            end: {
+              line: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+              column: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+            }
+            text: string
+          }
+        }
+      }
+    | {
+        id: string
         type: "mcp.tools.changed"
         properties: {
           server: string
@@ -1639,6 +1681,7 @@ export type GlobalEvent = {
     | SyncEventSessionNextPrompted
     | SyncEventSessionNextPromptAdmitted
     | SyncEventSessionNextPromptPromoted
+    | SyncEventSessionNextRunFailed
     | SyncEventSessionNextInterruptRequested
     | SyncEventSessionNextContextUpdated
     | SyncEventSessionNextSynthetic
@@ -2050,6 +2093,12 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
+  }
+  dynamic_workflows?: {
+    enabled?: boolean
+    max_agents?: number
+    max_concurrency?: number
+    require_approval?: boolean
   }
   experimental?: {
     disable_paste_summary?: boolean
@@ -3309,6 +3358,21 @@ export type WorkflowStartPayload = {
   permissionSessionID?: string
 }
 
+export type WorkflowGeneratePayload = {
+  objective: string
+  args?: {
+    [key: string]: unknown
+  }
+  budget?: number
+  permissionSessionID?: string
+  model?: {
+    providerID: string
+    modelID: string
+  }
+  agent?: string
+  variant?: string
+}
+
 export type UnauthorizedError = {
   _tag: "UnauthorizedError"
   message: string
@@ -3889,6 +3953,27 @@ export type SyncEventSessionNextPromptPromoted = {
       messageID: string
       prompt: Prompt
       timeCreated: number
+    }
+  }
+}
+
+export type SyncEventSessionNextRunFailed = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.run.failed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      reason: "execution-failed" | "step-limit-exceeded" | "unknown"
+      input?: {
+        messageID: string
+        admittedSeq: number
+        promotedSeq?: number
+      }
     }
   }
 }
@@ -5032,6 +5117,21 @@ export type EventSessionNextPromptPromoted = {
   }
 }
 
+export type EventSessionNextRunFailed = {
+  id: string
+  type: "session.next.run.failed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    reason: "execution-failed" | "step-limit-exceeded" | "unknown"
+    input?: {
+      messageID: string
+      admittedSeq: number
+      promotedSeq?: number
+    }
+  }
+}
+
 export type EventSessionNextInterruptRequested = {
   id: string
   type: "session.next.interrupt.requested"
@@ -5613,6 +5713,33 @@ export type EventPermissionReplied = {
     sessionID: string
     requestID: string
     reply: "once" | "always" | "reject"
+  }
+}
+
+export type EventIdeInstalled = {
+  id: string
+  type: "ide.installed"
+  properties: {
+    ide: string
+  }
+}
+
+export type EventIdeContextUpdated = {
+  id: string
+  type: "ide.context.updated"
+  properties: {
+    uri?: string
+    selection?: {
+      start: {
+        line: number | "NaN" | "Infinity" | "-Infinity"
+        column: number | "NaN" | "Infinity" | "-Infinity"
+      }
+      end: {
+        line: number | "NaN" | "Infinity" | "-Infinity"
+        column: number | "NaN" | "Infinity" | "-Infinity"
+      }
+      text: string
+    }
   }
 }
 
@@ -10175,6 +10302,34 @@ export type WorkflowStartResponses = {
 }
 
 export type WorkflowStartResponse = WorkflowStartResponses[keyof WorkflowStartResponses]
+
+export type WorkflowGenerateData = {
+  body?: WorkflowGeneratePayload
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/generate"
+}
+
+export type WorkflowGenerateErrors = {
+  /**
+   * WorkflowApiError | InvalidRequestError
+   */
+  400: WorkflowApiError | InvalidRequestError
+}
+
+export type WorkflowGenerateError = WorkflowGenerateErrors[keyof WorkflowGenerateErrors]
+
+export type WorkflowGenerateResponses = {
+  /**
+   * Generated workflow run started
+   */
+  200: WorkflowRun
+}
+
+export type WorkflowGenerateResponse = WorkflowGenerateResponses[keyof WorkflowGenerateResponses]
 
 export type WorkflowCancelData = {
   body?: never

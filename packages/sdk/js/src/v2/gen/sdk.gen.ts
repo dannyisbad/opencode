@@ -324,6 +324,9 @@ import type {
   WorkflowCancelResponses,
   WorkflowDeleteErrors,
   WorkflowDeleteResponses,
+  WorkflowGenerateErrors,
+  WorkflowGeneratePayload,
+  WorkflowGenerateResponses,
   WorkflowGetErrors,
   WorkflowGetResponses,
   WorkflowListErrors,
@@ -5204,6 +5207,43 @@ export class Workflow extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<WorkflowStartResponses, WorkflowStartErrors, ThrowOnError>({
       url: "/workflow/{name}/start",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Generate and start dynamic workflow
+   *
+   * Generate a dynamic workflow from an objective and start it immediately.
+   */
+  public generate<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      workflowGeneratePayload?: WorkflowGeneratePayload
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "workflowGeneratePayload", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowGenerateResponses, WorkflowGenerateErrors, ThrowOnError>({
+      url: "/workflow/generate",
       ...options,
       ...params,
       headers: {

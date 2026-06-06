@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from "effect"
-
 import { InstanceState } from "@/effect/instance-state"
+import { Ide } from "@/ide"
+
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_DEFAULT from "./prompt/default.txt"
@@ -62,6 +63,7 @@ export const layer = Layer.effect(
             `  Platform: ${process.platform}`,
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
+            ...getIdeContext(),
           ].join("\n"),
         ]
       }),
@@ -111,5 +113,22 @@ export const layer = Layer.effect(
 )
 
 export const defaultLayer = layer.pipe(Layer.provide(Layer.mergeAll(Skill.defaultLayer, Workflow.defaultLayer, Config.defaultLayer)))
+
+export function getIdeContext(): string[] {
+  const ctx = Ide.editorContext()
+  if (!ctx.uri) return []
+
+  return [
+    `<ide-context>`,
+    `  The user has ${ctx.uri} open in their IDE.`,
+    ...(ctx.selection
+      ? [
+          `  They have ${ctx.selection.start.line === ctx.selection.end.line ? `line ${ctx.selection.start.line + 1}` : `lines ${ctx.selection.start.line + 1}-${ctx.selection.end.line + 1}`} selected:`,
+          ctx.selection.text,
+        ]
+      : []),
+    `</ide-context>`,
+  ]
+}
 
 export * as SystemPrompt from "./system"
