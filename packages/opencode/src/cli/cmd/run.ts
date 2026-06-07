@@ -872,6 +872,7 @@ export const RunCommand = effectCmd({
         baseUrl: "http://opencode.internal",
         fetch: fetchFn,
         directory,
+        headers: ServerAuth.headers(),
       })
       await execute(sdk)
     })

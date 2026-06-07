@@ -59,7 +59,16 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
 
     const generate = Effect.fn("WorkflowHttpApi.generate")(function* (ctx: { payload: GeneratePayload }) {
       const cfg = yield* config.get()
-      if (cfg.dynamic_workflows?.enabled !== true) {
+      let dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true
+      if (!dynamicWorkflowsEnabled && ctx.payload.permissionSessionID) {
+        const sess = yield* sessions
+          .get(ctx.payload.permissionSessionID)
+          .pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (sess?.metadata?.ultracode_enabled === true) {
+          dynamicWorkflowsEnabled = true
+        }
+      }
+      if (!dynamicWorkflowsEnabled) {
         return yield* Effect.fail(new WorkflowApiError({ message: "Dynamic workflows are disabled in config" }))
       }
       const instance = yield* InstanceState.context
@@ -68,10 +77,7 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
       const runId = Workflow.RunID.ascending()
       const workflowName = `dynamic-${runId.slice(0, 8)}`
       const filepath = path.join(dynamicDir, `${workflowName}.ts`)
-      const plannerSession = yield* sessions.create({ title: `Workflow planner: ${ctx.payload.objective}` })
       const plan = yield* planDynamicWorkflow({
-        prompt,
-        sessionID: plannerSession.id,
         objective: ctx.payload.objective,
         model: ctx.payload.model as { providerID: any; modelID: any } | undefined,
         agent: ctx.payload.agent,

@@ -37,8 +37,12 @@ export function provider(model: Provider.Model) {
 
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
-  readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
+  readonly skills: (
+    agent: Agent.Info,
+    session?: { metadata?: Record<string, any>; hasStaticLegacyRequest?: boolean },
+  ) => Effect.Effect<string | undefined>
 }
+
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
 
@@ -68,15 +72,19 @@ export const layer = Layer.effect(
         ]
       }),
 
-      skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info) {
+      skills: Effect.fn("SystemPrompt.skills")(function* (
+        agent: Agent.Info,
+        session?: { metadata?: Record<string, any>; hasStaticLegacyRequest?: boolean },
+      ) {
         const disabled = Permission.disabled(["skill", "workflow"], agent.permission)
         const cfg = yield* config.get()
-        const dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true
+        const dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true || session?.metadata?.ultracode_enabled === true
 
         const skillList = disabled.has("skill") ? [] : yield* skill.available(agent)
-        const workflowList = disabled.has("workflow")
-          ? []
-          : yield* workflow.list().pipe(Effect.catch(() => Effect.succeed([])))
+        const workflowList =
+          disabled.has("workflow") || !session?.hasStaticLegacyRequest
+            ? []
+            : yield* workflow.list().pipe(Effect.catch(() => Effect.succeed([])))
 
         const sections: (string | undefined)[] = [
           skillList.length
@@ -91,14 +99,14 @@ export const layer = Layer.effect(
           workflowList.length
             ? [
                 "Workflows are project-local multi-step automations that can run agents, phases, and structured processes.",
-                "Do not use workflows by default. Use the workflow tool only when the user asks for a workflow, asks to create one, or clearly confirms workflow automation.",
+                "Static/regular workflows are discouraged. Do not use or suggest them by default unless the user explicitly requests one of the named workflows below by name. Prefer dynamic workflows instead.",
                 'Use the workflow tool with action="read" for details before starting a workflow if the arguments or behavior are unclear.',
                 Workflow.fmt(workflowList),
               ].join("\n")
             : undefined,
           dynamicWorkflowsEnabled && !disabled.has("workflow")
             ? [
-                "Dynamic workflows are enabled. When the user mentions 'ultracode', 'workflow', or 'workflows', or when a complex task would benefit from multi-agent orchestration (parallel agents, verification loops, batch processing), use the workflow tool with action='generate' to create a dynamic workflow tailored to the task.",
+                "Dynamic workflows are enabled and highly preferred. If the user mentions 'ultracode', 'workflow', or 'workflows', or asks to use a workflow, DO NOT load or use the workflow tool for static/regular/legacy workflows unless the user explicitly says to use STATIC or LEGACY workflows with those exact words. It should ALWAYS only load/use dynamic workflows (via workflow tool with action='generate') unless explicitly told to use static or legacy workflows.",
                 "Dynamic workflows can use: parallel fan-out, synthesis, adversarial verification, iterative loops, and batch processing. They are generated on-the-fly and run through the native workflow engine with full observability.",
               ].join("\n")
             : undefined,

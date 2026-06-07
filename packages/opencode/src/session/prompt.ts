@@ -1312,7 +1312,7 @@ export const layer = Layer.effect(
                 const bypassAgentCheck = originalUser.parts.some((p) => p.type === "agent")
                 const promptOps = yield* ops()
                 const [skills, env, instructions] = yield* Effect.all([
-                  sys.skills(originalAgent),
+                  sys.skills(originalAgent, session),
                   sys.environment(model),
                   instruction.system().pipe(Effect.orDie),
                 ])
@@ -1468,7 +1468,7 @@ export const layer = Layer.effect(
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
             const [skills, env, instructions, modelMsgs] = yield* Effect.all([
-              sys.skills(agent),
+              sys.skills(agent, session),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               MessageV2.toModelMessagesEffect(msgs, model),

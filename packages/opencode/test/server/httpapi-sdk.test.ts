@@ -1,3 +1,75 @@
+/**
+ * @fileoverview Integration test suite for OpenCode's generated SDK client endpoints.
+ *
+ * This suite verifies the correctness, parity, and robustness of the SDK client
+ * across both raw and default server paths. It exercises global control routes,
+ * instance-scoped filesystem and session operations, V2 location-aware endpoints,
+ * and real-time event subscription streams.
+ *
+ * @module HttpApiSdkTests
+ * @see {@link createOpencodeClient} for the SDK client factory.
+ * @see {@link httpapiLayer} for the underlying HTTP API server layer.
+ *
+ * @category IntegrationTests
+ * @subcategory SDK
+ *
+ * @description
+ * The test suite is built on the Effect TS framework and covers the following areas:
+ *
+ * ### 1. Global & Control Routes
+ * - {@link sdk.global.health}: Verifies server health status and payload structure.
+ * - {@link sdk.app.log}: Validates remote logging capabilities and payload delivery.
+ * - {@link sdk.auth.set}: Asserts error handling for invalid authentication configurations.
+ *
+ * ### 2. Safe Instance Routes
+ * - {@link sdk.file.read}: Verifies reading files from the instance workspace.
+ * - {@link sdk.session.create} & {@link sdk.session.list}: Validates session lifecycle management.
+ * - {@link sdk.project.current} & {@link sdk.config.get}: Asserts retrieval of active project metadata and configuration.
+ * - {@link sdk.find.files}: Tests workspace-wide file search capabilities.
+ *
+ * ### 3. V2 Location-Aware Routes
+ * - {@link sdk.v2.fs.read}: Verifies directory and workspace routing for V2 location GET requests.
+ * - Asserts correct query parameter serialization (`location[directory]`, `location[workspace]`).
+ *
+ * ### 4. Event Streams & Subscriptions
+ * - {@link sdk.global.event}: Tests global server-sent event streams.
+ * - {@link sdk.event.subscribe}: Tests instance-scoped event subscription streams.
+ *
+ * ### 5. Error Handling & Parity
+ * - Validates error shape preservation (e.g., `NotFoundError` for missing sessions).
+ * - Asserts behavior of `throwOnError` vs. result-tuple error returns.
+ * - Verifies basic authentication enforcement and credential validation.
+ *
+ * @typedef {"default" | "raw"} ServerPath
+ * Represents the server path type used to route requests.
+ * - `"default"`: Standard API endpoints.
+ * - `"raw"`: Raw un-namespaced endpoints.
+ *
+ * @typedef {ReturnType<typeof createOpencodeClient>} Sdk
+ * The instantiated OpenCode SDK client under test.
+ *
+ * @typedef {object} SdkResult
+ * @property {Response} response - The raw HTTP Response object.
+ * @property {unknown} [data] - The parsed response data payload (if successful).
+ * @property {unknown} [error] - The parsed error payload (if failed).
+ *
+ * @typedef {object} Captured
+ * @property {number} status - The HTTP status code of the response.
+ * @property {unknown} [data] - The parsed response data payload.
+ * @property {unknown} [error] - The parsed error payload.
+ *
+ * @typedef {object} ProjectFixture
+ * @property {Sdk} sdk - The configured SDK client instance.
+ * @property {string} directory - The absolute path to the temporary workspace directory.
+ *
+ * @typedef {ProjectFixture & { llm: TestLLMServer["Service"] }} LlmProjectFixture
+ * A project fixture that also includes a mock LLM server service.
+ *
+ * @example
+ * // To run this test suite, execute the following command from the packages/opencode directory:
+ * // bun test test/server/httpapi-sdk.test.ts
+ */
+
 import { afterEach, describe, expect } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -58,6 +130,19 @@ type TestServices =
   | HttpServer.HttpServer
 type TestScope = Scope.Scope | TestServices
 
+/**
+ * Creates and configures an OpenCode SDK client instance for testing.
+ *
+ * @param {ServerPath} serverPath - The server path type ("default" | "raw").
+ * @param {string} [directory] - Optional absolute path to the workspace directory.
+ * @param {object} [input] - Optional configuration overrides.
+ * @param {string} [input.password] - Optional basic auth password.
+ * @param {string} [input.username] - Optional basic auth username.
+ * @param {Record<string, string>} [input.headers] - Optional custom headers to include in requests.
+ * @param {string} [input.workspaceID] - Optional experimental workspace ID.
+ * @param {(request: Request) => void} [input.onRequest] - Optional callback triggered on each request.
+ * @returns {Effect.Effect<Sdk, never, TestServices>} An Effect that resolves to the configured SDK client.
+ */
 function client(
   serverPath: ServerPath,
   directory?: string,
@@ -82,6 +167,16 @@ function client(
   )
 }
 
+/**
+ * Creates a custom fetch implementation that intercepts and routes requests to the test HTTP server.
+ *
+ * @param {ServerPath} serverPath - The server path type ("default" | "raw").
+ * @param {object} [input] - Optional configuration overrides.
+ * @param {string} [input.password] - Optional basic auth password.
+ * @param {string} [input.username] - Optional basic auth username.
+ * @param {(request: Request) => void} [input.onRequest] - Optional callback triggered on each request.
+ * @returns {Effect.Effect<typeof globalThis.fetch, never, TestServices>} An Effect that resolves to the fetch function.
+ */
 function serverFetch(
   serverPath: ServerPath,
   input?: { password?: string; username?: string; onRequest?: (request: Request) => void },
@@ -105,14 +200,34 @@ function serverFetch(
   )
 }
 
+/**
+ * Generates a Basic Authentication header value.
+ *
+ * @param {string} username - The username.
+ * @param {string} password - The password.
+ * @returns {string} The formatted Basic Auth header string.
+ */
 function authorization(username: string, password: string) {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`
 }
 
+/**
+ * Wraps a Promise-returning request in an Effect.
+ *
+ * @template T
+ * @param {() => Promise<T>} request - A function that returns a Promise.
+ * @returns {Effect.Effect<T, never, never>} An Effect wrapping the Promise.
+ */
 function call<T>(request: () => Promise<T>) {
   return Effect.promise(request)
 }
 
+/**
+ * Executes an SDK request and captures its HTTP status, data, and error.
+ *
+ * @param {() => Promise<SdkResult>} request - A function that returns an SDK result Promise.
+ * @returns {Effect.Effect<Captured, never, never>} An Effect that resolves to the captured response details.
+ */
 function capture(request: () => Promise<SdkResult>) {
   return call(request).pipe(
     Effect.map((result) => ({
@@ -123,6 +238,12 @@ function capture(request: () => Promise<SdkResult>) {
   )
 }
 
+/**
+ * Executes a request and captures any thrown error.
+ *
+ * @param {() => Promise<unknown>} request - A function that returns a Promise.
+ * @returns {Effect.Effect<unknown, never, never>} An Effect that resolves to the caught error, or undefined if none was thrown.
+ */
 function captureThrown(request: () => Promise<unknown>) {
   return call(async () => {
     try {
@@ -133,6 +254,13 @@ function captureThrown(request: () => Promise<unknown>) {
   })
 }
 
+/**
+ * Asserts that the response status of an SDK request matches the expected value.
+ *
+ * @param {() => Promise<{ response: Response }>} request - A function that returns a response Promise.
+ * @param {number} status - The expected HTTP status code.
+ * @returns {Effect.Effect<void, never, never>} An Effect that performs the assertion.
+ */
 function expectStatus(request: () => Promise<{ response: Response }>, status: number) {
   return call(request).pipe(
     Effect.tap((result) => Effect.sync(() => expect(result.response.status).toBe(status))),
@@ -140,6 +268,12 @@ function expectStatus(request: () => Promise<{ response: Response }>, status: nu
   )
 }
 
+/**
+ * Subscribes to an event stream and retrieves the first event, with a 1-second timeout.
+ *
+ * @param {(signal: AbortSignal) => Promise<{ stream: AsyncIterator<unknown> }>} open - A function that opens the event stream.
+ * @returns {Effect.Effect<unknown, Error, never>} An Effect that resolves to the first event payload.
+ */
 function firstEvent(open: (signal: AbortSignal) => Promise<{ stream: AsyncIterator<unknown> }>) {
   return Effect.acquireRelease(
     Effect.sync(() => new AbortController()),
@@ -164,22 +298,52 @@ function firstEvent(open: (signal: AbortSignal) => Promise<{ stream: AsyncIterat
   )
 }
 
+/**
+ * Safely casts or converts an unknown value into a record object.
+ *
+ * @param {unknown} value - The value to convert.
+ * @returns {Record<string, unknown>} A record object, or an empty object if the value is not a non-array object.
+ */
 function record(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value)) : {}
 }
 
+/**
+ * Safely casts or converts an unknown value into an array.
+ *
+ * @param {unknown} value - The value to convert.
+ * @returns {unknown[]} The array, or an empty array if the value is not an array.
+ */
 function array(value: unknown) {
   return Array.isArray(value) ? value : []
 }
 
+/**
+ * Extracts the HTTP status codes from a record of captured SDK results.
+ *
+ * @param {Record<string, Captured>} input - A record mapping keys to captured response details.
+ * @returns {Record<string, number>} A record mapping the same keys to their respective HTTP status codes.
+ */
 function statuses(input: Record<string, Captured>) {
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, value.status]))
 }
 
+/**
+ * Extracts the text content of the first part of a message payload.
+ *
+ * @param {unknown} value - The message payload.
+ * @returns {unknown} The text content of the first part, or undefined if not found.
+ */
 function firstPartText(value: unknown) {
   return record(array(record(value).parts)[0]).text
 }
 
+/**
+ * Extracts, filters, and sorts session titles from an unknown list of sessions.
+ *
+ * @param {unknown} value - The list of sessions.
+ * @returns {string[]} A sorted array of valid session titles.
+ */
 function sessionTitles(value: unknown) {
   return array(value)
     .map((item) => record(item).title)
@@ -187,6 +351,11 @@ function sessionTitles(value: unknown) {
     .sort()
 }
 
+/**
+ * Resets the global test state by disposing all active instances and resetting the database.
+ *
+ * @returns {Effect.Effect<void, never, never>} An Effect that performs the state reset.
+ */
 function resetState() {
   return Effect.promise(async () => {
     await disposeAllInstances()
@@ -194,10 +363,31 @@ function resetState() {
   })
 }
 
+/**
+ * Registers a live HTTP API integration test.
+ *
+ * @template A, E
+ * @param {string} name - The name of the test.
+ * @param {Effect.Effect<A, E, TestScope>} effect - The test logic Effect.
+ * @returns {void}
+ */
 function httpapi<A, E>(name: string, effect: Effect.Effect<A, E, TestScope>) {
   it.live(name, effect)
 }
 
+/**
+ * Registers an HTTP API integration test that runs within a scoped temporary instance.
+ *
+ * @template A, E
+ * @param {string} name - The name of the test.
+ * @param {object} options - Configuration options for the test instance.
+ * @param {ServerPath} options.serverPath - The server path type ("default" | "raw").
+ * @param {boolean} [options.git=true] - Whether to initialize a git repository in the temp directory.
+ * @param {Partial<ConfigV1.Info>} [options.config] - Optional configuration overrides.
+ * @param {(dir: string) => Effect.Effect<void, E, TestServices>} [options.setup] - Optional setup function run before the test.
+ * @param {(input: ProjectFixture) => Effect.Effect<A, E, TestScope>} run - The test logic function.
+ * @returns {void}
+ */
 function httpapiInstance<A, E>(
   name: string,
   options: {
@@ -219,10 +409,30 @@ function httpapiInstance<A, E>(
   )
 }
 
+/**
+ * Registers a test to verify behavior parity across different server paths.
+ *
+ * @template A, E
+ * @param {string} name - The name of the test.
+ * @param {(serverPath: ServerPath) => Effect.Effect<A, E, TestScope>} scenario - The test scenario function.
+ * @returns {void}
+ */
 function serverPathParity<A, E>(name: string, scenario: (serverPath: ServerPath) => Effect.Effect<A, E, TestScope>) {
   it.live(name, scenario("raw"))
 }
 
+/**
+ * Runs an Effect with a temporary project directory and a configured SDK client.
+ *
+ * @template A, E, E2
+ * @param {ServerPath} serverPath - The server path type ("default" | "raw").
+ * @param {object} options - Configuration options for the project.
+ * @param {boolean} [options.git=false] - Whether to initialize a git repository.
+ * @param {Partial<ConfigV1.Info>} [options.config] - Optional configuration overrides.
+ * @param {(dir: string) => Effect.Effect<void, E2, TestServices>} [options.setup] - Optional setup function.
+ * @param {(input: ProjectFixture) => Effect.Effect<A, E, TestScope>} run - The test logic function.
+ * @returns {Effect.Effect<A, E | E2, TestScope>} An Effect that runs the project-scoped test.
+ */
 function withProject<A, E, E2 = never>(
   serverPath: ServerPath,
   options: {
@@ -242,6 +452,14 @@ function withProject<A, E, E2 = never>(
   })
 }
 
+/**
+ * Runs an Effect with a temporary project directory pre-populated with standard files.
+ *
+ * @template A, E
+ * @param {ServerPath} serverPath - The server path type ("default" | "raw").
+ * @param {(input: ProjectFixture) => Effect.Effect<A, E, TestScope>} run - The test logic function.
+ * @returns {Effect.Effect<A, E, TestScope>} An Effect that runs the standard project-scoped test.
+ */
 function withStandardProject<A, E>(
   serverPath: ServerPath,
   run: (input: ProjectFixture) => Effect.Effect<A, E, TestScope>,
@@ -249,6 +467,14 @@ function withStandardProject<A, E>(
   return withProject(serverPath, { setup: writeStandardFiles }, run)
 }
 
+/**
+ * Runs an Effect with a fake LLM server and a configured project.
+ *
+ * @template A, E
+ * @param {ServerPath} serverPath - The server path type ("default" | "raw").
+ * @param {(input: LlmProjectFixture) => Effect.Effect<A, E, TestScope>} run - The test logic function.
+ * @returns {Effect.Effect<A, E, TestScope>} An Effect that runs the test with a fake LLM.
+ */
 function withFakeLlm<A, E>(serverPath: ServerPath, run: (input: LlmProjectFixture) => Effect.Effect<A, E, TestScope>) {
   return Effect.gen(function* () {
     const llm = yield* TestLLMServer
@@ -256,6 +482,16 @@ function withFakeLlm<A, E>(serverPath: ServerPath, run: (input: LlmProjectFixtur
   }).pipe(Effect.provide(TestLLMServer.layer))
 }
 
+/**
+ * Runs an Effect with a fake LLM server and a custom-configured project.
+ *
+ * @template A, E
+ * @param {ServerPath} serverPath - The server path type ("default" | "raw").
+ * @param {object} options - Configuration options for the project.
+ * @param {(dir: string) => Effect.Effect<void, E, TestServices>} [options.setup] - Optional setup function.
+ * @param {(input: LlmProjectFixture) => Effect.Effect<A, E, TestScope>} run - The test logic function.
+ * @returns {Effect.Effect<A, E, TestScope>} An Effect that runs the test with a fake LLM and custom setup.
+ */
 function withFakeLlmProject<A, E>(
   serverPath: ServerPath,
   options: { setup?: (dir: string) => Effect.Effect<void, E, TestServices> },
@@ -274,6 +510,12 @@ function withFakeLlmProject<A, E>(
   }).pipe(Effect.provide(TestLLMServer.layer))
 }
 
+/**
+ * Writes standard test files (`hello.txt` and `needle.ts`) to the specified directory.
+ *
+ * @param {string} dir - The target directory path.
+ * @returns {Effect.Effect<void, never, FSUtil.Service>} An Effect that writes the standard files.
+ */
 function writeStandardFiles(dir: string) {
   return FSUtil.Service.use((fs) =>
     Effect.all([
@@ -283,6 +525,12 @@ function writeStandardFiles(dir: string) {
   )
 }
 
+/**
+ * Writes a mock project skill markdown file to the specified directory.
+ *
+ * @param {string} dir - The target directory path.
+ * @returns {Effect.Effect<void, never, FSUtil.Service>} An Effect that writes the skill file.
+ */
 function writeProjectSkill(dir: string) {
   return FSUtil.Service.use((fs) =>
     fs.writeWithDirs(
@@ -298,6 +546,13 @@ description: A project skill visible to REST API prompts.
   )
 }
 
+/**
+ * Seeds a mock user message and text part into the database for a given session.
+ *
+ * @param {string} directory - The active instance directory.
+ * @param {string} sessionID - The ID of the session to seed.
+ * @returns {Effect.Effect<{ message: SessionV1.User; part: SessionV1.Part }, never, InstanceStore.Service>} An Effect that seeds the message and returns the created entities.
+ */
 function seedMessage(directory: string, sessionID: string) {
   const id = SessionID.make(sessionID)
   return InstanceStore.Service.use((store) =>

@@ -1169,6 +1169,16 @@ export function Session() {
       run: () => {
         const next = !kv.get("ultracode_enabled", false)
         kv.set("ultracode_enabled", next)
+        const sessionData = session()
+        if (sessionData) {
+          void sdk.client.session.update({
+            sessionID: route.sessionID,
+            metadata: {
+              ...sessionData.metadata,
+              ultracode_enabled: next,
+            },
+          })
+        }
         toast.show({
           message: next ? "Ultracode enabled for this TUI session" : "Ultracode disabled",
           variant: "info",

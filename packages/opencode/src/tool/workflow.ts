@@ -234,6 +234,27 @@ function backgroundMessage(run: Workflow.Run, state: "completed" | "error", text
   ].join("\n")
 }
 
+function backgroundGenerateStarted(runId: string, workflow: string) {
+  return [
+    `<workflow_run id="${runId}" state="running">`,
+    `<workflow>${workflow}</workflow>`,
+    "<summary>Dynamic workflow generation and execution started in background.</summary>",
+    "<instructions>The workflow is being planned and will start automatically in the background. You will be notified when it completes.</instructions>",
+    "</workflow_run>",
+  ].join("\n")
+}
+
+function backgroundJobMessage(runId: string, workflow: string, state: "completed" | "error", text: string) {
+  return [
+    `<workflow_run id="${runId}" state="${state}">`,
+    `<summary>Background workflow ${state}: ${workflow}</summary>`,
+    state === "completed" ? "<workflow_result>" : "<workflow_error>",
+    text,
+    state === "completed" ? "</workflow_result>" : "</workflow_error>",
+    "</workflow_run>",
+  ].join("\n")
+}
+
 function sanitizeWorkflowName(name: string) {
   if (!WORKFLOW_NAME_PATTERN.test(name)) {
     throw new Error("Workflow names may only contain letters, numbers, underscores, and dashes")
@@ -505,7 +526,14 @@ export const WorkflowTool = Tool.define(
           if (params.action === "generate") {
             if (!params.objective) return yield* Effect.fail(new Error("objective is required for action=generate"))
             const cfg = yield* config.get()
-            if (cfg.dynamic_workflows?.enabled !== true) {
+            let dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true
+            if (!dynamicWorkflowsEnabled && ctx.sessionID) {
+              const sess = yield* sessions.get(ctx.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              if (sess?.metadata?.ultracode_enabled === true) {
+                dynamicWorkflowsEnabled = true
+              }
+            }
+            if (!dynamicWorkflowsEnabled) {
               return yield* Effect.fail(new Error("Dynamic workflows are disabled in config"))
             }
             const ops = promptOps(ctx)
@@ -523,9 +551,112 @@ export const WorkflowTool = Tool.define(
               metadata: { objective: params.objective, workflowName },
             })
 
+            if (params.background !== false) {
+              const job = yield* background.start({
+                id: runId,
+                type: "workflow",
+                title: workflowName,
+                metadata: {
+                  runId,
+                  workflow: workflowName,
+                  background: true,
+                  parentSessionId: ctx.sessionID,
+                },
+                run: Effect.gen(function* () {
+                  const plan = yield* planDynamicWorkflow({
+                    objective: params.objective!,
+                  })
+                  const generatedSource = plan.source
+
+                  yield* fs.writeWithDirs(filepath, generatedSource)
+                  yield* format.file(filepath).pipe(Effect.ignore)
+                  yield* events.publish(FileSystem.Event.Edited, { file: filepath })
+                  yield* events.publish(Watcher.Event.Updated, { file: filepath, event: "add" })
+                  yield* lsp.touchFile(filepath, "document")
+
+                  const run = yield* workflow
+                    .start({
+                      name: workflowName,
+                      args: params.args ?? {},
+                      budget: params.budget,
+                      prompt: ops,
+                      permissionSessionID: ctx.sessionID,
+                      source: generatedSource,
+                      temporary: true,
+                    })
+                    .pipe(Effect.mapError(workflowError))
+
+                  const waited = yield* waitForWorkflow(workflow, run)
+                  const error = runFailure(waited.run)
+                  if (error) return yield* Effect.fail(error)
+                  return terminalOutput(waited.run)
+                }).pipe(
+                  Effect.tap((output) =>
+                    sessions.get(ctx.sessionID).pipe(
+                      Effect.flatMap((session) =>
+                        ops.prompt({
+                          sessionID: ctx.sessionID,
+                          agent: session.agent ?? ctx.agent,
+                          parts: [
+                            {
+                              type: "text",
+                              synthetic: true,
+                              text: backgroundJobMessage(runId, workflowName, "completed", output),
+                            },
+                          ],
+                        }),
+                      ),
+                      Effect.ignore,
+                      Effect.forkIn(scope, { startImmediately: true }),
+                    ),
+                  ),
+                  Effect.catchCause((cause) =>
+                    sessions.get(ctx.sessionID).pipe(
+                      Effect.flatMap((session) =>
+                        ops.prompt({
+                          sessionID: ctx.sessionID,
+                          agent: session.agent ?? ctx.agent,
+                          parts: [
+                            {
+                              type: "text",
+                              synthetic: true,
+                              text: backgroundJobMessage(runId, workflowName, "error", Cause.pretty(cause)),
+                            },
+                          ],
+                        }),
+                      ),
+                      Effect.ignore,
+                      Effect.forkIn(scope, { startImmediately: true }),
+                      Effect.andThen(Effect.failCause(cause)),
+                    ),
+                  ),
+                ),
+              })
+
+              yield* ctx.metadata({
+                title: workflowName,
+                metadata: {
+                  runId,
+                  workflow: workflowName,
+                  background: true,
+                  jobId: job.id,
+                },
+              })
+
+              return {
+                title: `Dynamic workflow started: ${workflowName}`,
+                metadata: {
+                  runId,
+                  workflow: workflowName,
+                  background: true,
+                  jobId: job.id,
+                  timedOut: false,
+                },
+                output: backgroundGenerateStarted(runId, workflowName),
+              }
+            }
+
             const plan = yield* planDynamicWorkflow({
-              prompt: ops,
-              sessionID: ctx.sessionID,
               objective: params.objective,
             })
             const generatedSource = plan.source
@@ -552,71 +683,8 @@ export const WorkflowTool = Tool.define(
 
             yield* ctx.metadata({
               title: run.definition?.meta.name ?? run.workflow,
-              metadata: workflowMetadata(run, params.background !== false),
+              metadata: workflowMetadata(run, false),
             })
-
-            if (params.background !== false) {
-              const job = yield* background.start({
-                id: run.id,
-                type: "workflow",
-                title: run.workflow,
-                metadata: {
-                  ...workflowMetadata(run, true),
-                  parentSessionId: ctx.sessionID,
-                },
-                run: waitForWorkflow(workflow, run).pipe(
-                  Effect.flatMap((waited) => {
-                    const error = runFailure(waited.run)
-                    return error ? Effect.fail(error) : Effect.succeed(terminalOutput(waited.run))
-                  }),
-                  Effect.tap((output) =>
-                    sessions.get(ctx.sessionID).pipe(
-                      Effect.flatMap((session) =>
-                        ops.prompt({
-                          sessionID: ctx.sessionID,
-                          agent: session.agent ?? ctx.agent,
-                          parts: [
-                            {
-                              type: "text",
-                              synthetic: true,
-                              text: backgroundMessage(run, "completed", output),
-                            },
-                          ],
-                        }),
-                      ),
-                      Effect.ignore,
-                      Effect.forkIn(scope, { startImmediately: true }),
-                    ),
-                  ),
-                  Effect.catchCause((cause) =>
-                    sessions.get(ctx.sessionID).pipe(
-                      Effect.flatMap((session) =>
-                        ops.prompt({
-                          sessionID: ctx.sessionID,
-                          agent: session.agent ?? ctx.agent,
-                          parts: [
-                            {
-                              type: "text",
-                              synthetic: true,
-                              text: backgroundMessage(run, "error", Cause.pretty(cause)),
-                            },
-                          ],
-                        }),
-                      ),
-                      Effect.ignore,
-                      Effect.forkIn(scope, { startImmediately: true }),
-                      Effect.andThen(Effect.failCause(cause)),
-                    ),
-                  ),
-                ),
-              })
-
-              return {
-                title: `Dynamic workflow started: ${run.workflow}`,
-                metadata: { ...workflowMetadata(run, true), jobId: job.id, timedOut: false },
-                output: backgroundStarted(run),
-              }
-            }
 
             const waited = yield* waitForWorkflow(workflow, run, params.timeout ?? DEFAULT_TIMEOUT)
             return {

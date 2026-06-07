@@ -22,6 +22,16 @@ export const SkillTool = Tool.define(
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          if (params.name === "workflows-instructions") {
+            const hasStaticLegacyRequest = ctx.messages?.some((m) =>
+              m.info.role === "user" &&
+              m.parts.some((p) => p.type === "text" && /\b(static|legacy)\b/i.test(p.text))
+            )
+            if (!hasStaticLegacyRequest) {
+              return yield* Effect.fail(new Error("DO NOT load the workflows-instructions skill unless you are explicitly asked to use STATIC or LEGACY workflows with those exact words."))
+            }
+          }
+
           const info = yield* skill
             .require(params.name)
             .pipe(Effect.catchTag("Skill.NotFoundError", (error) => Effect.die(new Error(error.message))))

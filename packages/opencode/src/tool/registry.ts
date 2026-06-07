@@ -83,6 +83,7 @@ export interface Interface {
     providerID: ProviderV2.ID
     modelID: ModelV2.ID
     agent: Agent.Info
+    hasStaticLegacyRequest?: boolean
   }) => Effect.Effect<Tool.Def[]>
 }
 
@@ -264,8 +265,11 @@ export const layer = Layer.effect(
       return (yield* all()).map((tool) => tool.id)
     })
 
-    const describeSkill = Effect.fn("ToolRegistry.describeSkill")(function* (agent: Agent.Info) {
-      const list = yield* skill.available(agent)
+    const describeSkill = Effect.fn("ToolRegistry.describeSkill")(function* (
+      agent: Agent.Info,
+      options?: { hasStaticLegacyRequest?: boolean },
+    ) {
+      const list = yield* skill.available(agent, options)
       if (list.length === 0) return "No skills are currently available."
       return [
         "Load a specialized skill that provides domain-specific instructions and workflows.",
@@ -331,7 +335,9 @@ export const layer = Layer.effect(
             description: [
               output.description,
               tool.id === TaskTool.id ? yield* describeTask(input.agent) : undefined,
-              tool.id === SkillTool.id ? yield* describeSkill(input.agent) : undefined,
+              tool.id === SkillTool.id
+                ? yield* describeSkill(input.agent, { hasStaticLegacyRequest: input.hasStaticLegacyRequest })
+                : undefined,
             ]
               .filter(Boolean)
               .join("\n"),

@@ -702,7 +702,10 @@ function createContext(input: {
     agent: input.agent,
     async synthesize(options) {
       checkpoint()
-      const combinedText = options.agents.map((a, i) => `### Agent ${i + 1}\n\n${a.text}`).join("\n\n---\n\n")
+      const combinedText = options.agents
+        .filter((a): a is { data: unknown; text: string } => typeof a === "object" && a !== null && "text" in a)
+        .map((a, i) => `### Agent ${i + 1}\n\n${a.text}`)
+        .join("\n\n---\n\n")
       const prompt = [
         options.prompt ?? "Synthesize the following agent outputs into one coherent, comprehensive result.",
         "",
@@ -1058,7 +1061,12 @@ export const layer = Layer.effect(
         return bridge
           .promise(
             Effect.gen(function* () {
-              const selected = agentInput.agent ? yield* agents.get(agentInput.agent) : yield* agents.defaultInfo()
+              const selected = (agentInput.agent ? yield* agents.get(agentInput.agent) : yield* agents.defaultInfo()) as Agent.Info | undefined
+              if (!selected) {
+                const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
+                const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
+                return yield* Effect.fail(new Error(`Agent "${agentInput.agent}" not found.${hint}`))
+              }
               const modelInfo = agentInput.model ? Provider.parseModel(agentInput.model) : selected.model
               let parentPermission: PermissionV1.Ruleset = []
               if (active.run.session_id) {

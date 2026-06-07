@@ -216,9 +216,9 @@ export function Prompt(props: PromptProps) {
   const [cursorVersion, setCursorVersion] = createSignal(0)
   const currentProviderLabel = createMemo(() => local.model.parsed().provider)
   const hasRightContent = createMemo(() => Boolean(props.right))
-  const ultracodeEnabled = createMemo(() => kv.get("ultracode_enabled", false))
+  const currentSession = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID) : undefined))
   const dynamicWorkflowSystemPrompt =
-    "Dynamic workflows are preferred for this message. If the task is substantive or would benefit from orchestration, use the workflow tool with action=\"generate\". Treat static workflows as legacy/manual unless the user explicitly asks for a pre-existing named workflow."
+    "Dynamic workflows (action=\"generate\") are enabled and highly preferred. If the user asks to use a workflow, or the task is substantive, immediately use the workflow tool with action=\"generate\" to create a dynamic workflow. Do not search for, list, or suggest regular static workflows unless the user explicitly asks for a specific pre-existing named workflow."
   const [workflowRuns, { refetch: refetchWorkflowRuns }] = createResource(
     () => Boolean(props.visible),
     async (visible: boolean) => {
@@ -320,6 +320,11 @@ export function Prompt(props: PromptProps) {
     mode: "normal",
     extmarkToPartIndex: new Map(),
     interrupt: 0,
+  })
+  const ultracodeEnabled = createMemo(() => {
+    if (kv.get("ultracode_enabled", false)) return true
+    if (shouldPreferDynamicWorkflow(store.prompt.input)) return true
+    return currentSession()?.metadata?.ultracode_enabled === true
   })
   let abortingSessionID: string | undefined
 
@@ -1041,6 +1046,7 @@ export function Prompt(props: PromptProps) {
       return false
     }
 
+    const preferDynamicWorkflow = ultracodeEnabled() || shouldPreferDynamicWorkflow(store.prompt.input)
     const variant = local.model.variant.current()
     let sessionID = props.sessionID
     let finishMoveProgress = false
@@ -1066,6 +1072,7 @@ export function Prompt(props: PromptProps) {
           id: selectedModel.modelID,
           variant,
         },
+        metadata: preferDynamicWorkflow ? { ultracode_enabled: true } : undefined,
       })
 
       if (res.error) {
@@ -1119,7 +1126,6 @@ export function Prompt(props: PromptProps) {
         : []
 
     const dynamicObjective = parseDynamicWorkflowObjective(inputText)
-    const preferDynamicWorkflow = ultracodeEnabled() || shouldPreferDynamicWorkflow(inputText)
     const systemPrompt = preferDynamicWorkflow ? dynamicWorkflowSystemPrompt : undefined
 
     if (store.mode === "shell") {
@@ -1192,6 +1198,16 @@ export function Prompt(props: PromptProps) {
       })
     } else {
       move.startSubmit()
+      const sessionData = currentSession()
+      if (preferDynamicWorkflow && sessionData && sessionData.metadata?.ultracode_enabled !== true) {
+        await sdk.client.session.update({
+          sessionID,
+          metadata: {
+            ...sessionData.metadata,
+            ultracode_enabled: true,
+          },
+        })
+      }
       sdk.client.session
         .prompt({
           sessionID,
@@ -1766,7 +1782,19 @@ export function Prompt(props: PromptProps) {
                   paddingLeft={1}
                   paddingRight={1}
                   backgroundColor={tint(theme.backgroundPanel, theme.accent, 0.22)}
-                  onMouseUp={() => kv.set("ultracode_enabled", false)}
+                  onMouseUp={() => {
+                    kv.set("ultracode_enabled", false)
+                    const sessionData = currentSession()
+                    if (sessionData && props.sessionID) {
+                      void sdk.client.session.update({
+                        sessionID: props.sessionID,
+                        metadata: {
+                          ...sessionData.metadata,
+                          ultracode_enabled: false,
+                        },
+                      })
+                    }
+                  }}
                 >
                   <text fg={theme.accent} wrapMode="none">
                     <b>⚡ ultracode</b>

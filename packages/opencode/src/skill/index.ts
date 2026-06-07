@@ -110,7 +110,10 @@ export interface Interface {
   readonly require: (name: string) => Effect.Effect<Info, NotFoundError>
   readonly all: () => Effect.Effect<Info[]>
   readonly dirs: () => Effect.Effect<string[]>
-  readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
+  readonly available: (
+    agent?: Agent.Info,
+    options?: { hasStaticLegacyRequest?: boolean },
+  ) => Effect.Effect<Info[]>
 }
 
 const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
@@ -330,7 +333,10 @@ export const layer = Layer.effect(
       return (yield* InstanceState.get(discovered)).dirs
     })
 
-    const available = Effect.fn("Skill.available")(function* (agent?: Agent.Info) {
+    const available = Effect.fn("Skill.available")(function* (
+      agent?: Agent.Info,
+      options?: { hasStaticLegacyRequest?: boolean },
+    ) {
       const s = yield* InstanceState.get(state)
       const list = Object.values(s.skills).toSorted((a, b) => a.name.localeCompare(b.name))
       const result = !agent
@@ -340,6 +346,9 @@ export const layer = Layer.effect(
               !isDisabled(skill.name) &&
               Permission.evaluate("skill", skill.name, agent.permission).action !== "deny",
           )
+      if (!options?.hasStaticLegacyRequest) {
+        return result.filter((skill) => skill.name !== "workflows-instructions")
+      }
       return result
     })
 
