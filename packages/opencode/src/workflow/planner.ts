@@ -111,7 +111,9 @@ export const planDynamicWorkflow = Effect.fn("Workflow.planDynamic")(function* (
     console.error("Planner produced no structured output. Info:", JSON.stringify(plannerSession.info, null, 2))
     return yield* Effect.fail(new Error("Planner produced no structured output"))
   }
-  const source = String(plannerResult.source ?? "")
+  let source = String(plannerResult.source ?? "")
+  // Sanitize LLM-escaped backticks and template placeholders
+  source = source.replace(/\\`/g, "`").replace(/\\\$/g, "$")
   if (!source.includes("export const meta") || !source.includes("export async function run")) {
     return yield* Effect.fail(new Error("Planner did not generate a valid workflow source"))
   }

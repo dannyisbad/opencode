@@ -75,6 +75,13 @@ function normalize(value: unknown, options: { stripNull?: boolean } = {}): unkno
     }
   }
 
+  if (Array.isArray(schema.anyOf) && schema.type === undefined) {
+    const allObjects = schema.anyOf.every((item) => isRecord(item) && item.type === "object")
+    if (allObjects) {
+      schema.type = "object"
+    }
+  }
+
   if (Array.isArray(schema.allOf) && schema.allOf.every(isRecord) && canFlattenAllOf(schema.allOf, schema)) {
     const { allOf, ...rest } = schema
     return normalize({ ...Object.assign({}, ...allOf), ...rest })
