@@ -300,7 +300,7 @@ export type ContextApi = {
   readonly budgetRemaining: number
   readonly setPhase: (phase: string) => void
   readonly log: (message: string) => void
-  readonly parallel: <T>(tasks: readonly (() => Promise<T>)[], options?: ParallelOptions) => Promise<T[]>
+  readonly parallel: <T>(tasks: readonly (() => Promise<T>)[], options?: ParallelOptions) => Promise<(T | null)[]>
   readonly pipeline: PipelineFn
   readonly agent: (input: AgentInput) => Promise<{ data: unknown; text: string }>
   readonly synthesize: (options: {
@@ -617,6 +617,24 @@ function createContext(input: {
   const checkpoint = () => {
     if (input.signal()?.aborted) throw new CancelledError()
   }
+  // Isolate a single fan-out arm: a thrown arm degrades to `null` (the error is
+  // logged on the run) instead of failing the whole run, so one flaky agent or
+  // step never kills its siblings. Run-fatal signals — cancellation and budget
+  // exhaustion — are re-thrown so they still abort the run as before.
+  const isolate = async <T>(label: string, fn: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await fn()
+    } catch (error) {
+      if (error instanceof CancelledError || error instanceof BudgetExceededError) throw error
+      input.active.run.logs.push({
+        time: Date.now(),
+        phase: input.active.run.current_phase,
+        message: `${label} failed — isolated, run continues: ${errorText(error)}`,
+      })
+      input.persist()
+      return null
+    }
+  }
   return {
     // Live remaining budget (USD), read on every access so a workflow can
     // observe the value shrink across agent steps. `Infinity` when the run was
@@ -641,13 +659,15 @@ function createContext(input: {
       // it runs to completion (or, if it is an agent step, is aborted for real
       // via PromptOps.cancel on its child session). This is deliberate: the
       // bridge runs each task as its own root fiber, not a child of active.fiber.
+      // A task that throws is isolated to `null` (see isolate()) so one failed
+      // arm never aborts the whole fan-out; cancellation/budget still propagate.
       return input.bridge.promise(
         Effect.forEach(
           tasks,
-          (task) =>
+          (task, i) =>
             Effect.promise(() => {
               checkpoint()
-              return task()
+              return isolate(`parallel task ${i + 1}`, task)
             }),
           { concurrency },
         ),
@@ -679,15 +699,20 @@ function createContext(input: {
       return input.bridge.promise(
         Effect.forEach(
           items,
-          (item) =>
-            Effect.promise(async () => {
-              let current: unknown = item
-              for (const stage of stages) {
-                checkpoint()
-                current = await stage(current, item)
-              }
-              return current
-            }),
+          (item, i) =>
+            // A stage that throws drops THIS item to `null` (its remaining stages
+            // are skipped) instead of aborting the whole pipeline; other items are
+            // unaffected. Cancellation/budget still propagate via isolate().
+            Effect.promise(() =>
+              isolate(`pipeline item ${i + 1}`, async () => {
+                let current: unknown = item
+                for (const stage of stages) {
+                  checkpoint()
+                  current = await stage(current, item)
+                }
+                return current
+              }),
+            ),
           { concurrency },
         ),
       )
@@ -782,14 +807,18 @@ function createContext(input: {
           Effect.forEach(
             batch,
             (item, idx) =>
-              Effect.promise(async () => {
-                checkpoint()
-                const val = await fn(item, i + idx)
-                if (val && typeof val === "object" && "prompt" in val) {
-                  return input.agent(val as any)
-                }
-                return val
-              }),
+              // Per-element isolation: a callback that throws yields `null`
+              // instead of aborting the fan-out; cancellation/budget propagate.
+              Effect.promise(() =>
+                isolate(`forEach item ${i + idx + 1}`, async () => {
+                  checkpoint()
+                  const val = await fn(item, i + idx)
+                  if (val && typeof val === "object" && "prompt" in val) {
+                    return input.agent(val as any)
+                  }
+                  return val
+                }),
+              ),
             { concurrency: "unbounded" },
           ),
         )

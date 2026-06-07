@@ -84,22 +84,28 @@ export type WorkflowPipelineStage<Prev, Item, Next> = (prev: Prev, item: Item) =
 /** Per-item pipeline. Each item flows through every stage SEQUENTIALLY (stage N+1
  * receives stage N's result for that item), while items run concurrently against
  * each other (no barrier between stages). Result is the last stage's output in
- * item order. Overloaded for 1..4 stages so heterogeneous types flow through. */
+ * item order. Overloaded for 1..4 stages so heterogeneous types flow through.
+ *
+ * Each item is ISOLATED: if any stage throws, that item drops to `null` (its
+ * remaining stages are skipped, the error is logged on the run) instead of
+ * aborting the whole pipeline — so one bad item never kills the others. Filter
+ * the result before use. Run-fatal signals (cancellation, budget) still
+ * propagate. */
 export interface WorkflowPipelineFn {
-  <I, A>(items: readonly I[], s1: WorkflowPipelineStage<I, I, A>, options?: WorkflowPipelineOptions): Promise<A[]>
+  <I, A>(items: readonly I[], s1: WorkflowPipelineStage<I, I, A>, options?: WorkflowPipelineOptions): Promise<(A | null)[]>
   <I, A, B>(
     items: readonly I[],
     s1: WorkflowPipelineStage<I, I, A>,
     s2: WorkflowPipelineStage<A, I, B>,
     options?: WorkflowPipelineOptions,
-  ): Promise<B[]>
+  ): Promise<(B | null)[]>
   <I, A, B, C>(
     items: readonly I[],
     s1: WorkflowPipelineStage<I, I, A>,
     s2: WorkflowPipelineStage<A, I, B>,
     s3: WorkflowPipelineStage<B, I, C>,
     options?: WorkflowPipelineOptions,
-  ): Promise<C[]>
+  ): Promise<(C | null)[]>
   <I, A, B, C, D>(
     items: readonly I[],
     s1: WorkflowPipelineStage<I, I, A>,
@@ -107,7 +113,7 @@ export interface WorkflowPipelineFn {
     s3: WorkflowPipelineStage<B, I, C>,
     s4: WorkflowPipelineStage<C, I, D>,
     options?: WorkflowPipelineOptions,
-  ): Promise<D[]>
+  ): Promise<(D | null)[]>
 }
 
 export type WorkflowContext = {
@@ -121,7 +127,14 @@ export type WorkflowContext = {
   readonly budgetRemaining: number
   setPhase(phase: string): void
   log(message: string): void
-  parallel<T>(tasks: readonly (() => Promise<T>)[], options?: WorkflowParallelOptions): Promise<T[]>
+  /**
+   * Run tasks concurrently and wait for all. A task that throws is ISOLATED: it
+   * resolves to `null` (the error is logged on the run) instead of aborting the
+   * whole fan-out, so one flaky arm never kills its siblings. Filter the result
+   * (e.g. `.filter(Boolean)`) before use. Run-fatal signals (cancellation,
+   * budget exhaustion) still propagate and abort the run.
+   */
+  parallel<T>(tasks: readonly (() => Promise<T>)[], options?: WorkflowParallelOptions): Promise<(T | null)[]>
   pipeline: WorkflowPipelineFn
   agent(input: WorkflowAgentInput): Promise<WorkflowAgentResult>
   /**
@@ -141,7 +154,10 @@ export type WorkflowContext = {
   loop(options: WorkflowLoopOptions): Promise<WorkflowAgentResult[]>
   /**
    * Fan-out over an array: spawn one agent per element, then wait for all.
-   * Respects the concurrency limit by batching.
+   * Respects the concurrency limit by batching. Each element is ISOLATED — an
+   * element whose callback throws yields `null` (logged on the run) rather than
+   * aborting the fan-out; run-fatal signals (cancellation, budget) still
+   * propagate. Filter the result before use.
    */
   forEach<T>(
     items: readonly T[],

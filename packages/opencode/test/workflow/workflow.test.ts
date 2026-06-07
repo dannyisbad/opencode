@@ -339,6 +339,27 @@ export async function run(args, ctx) {
 }
 `
 
+// Isolation-Fixture: je ein fan-out-Arm wirft. parallel degradiert den Arm zu
+// null, pipeline lässt das werfende Item fallen (Stage 2 übersprungen) — der Run
+// läuft trotzdem bis completed und liefert die übrigen Resultate.
+const ISOLATION_FIXTURE = "isolation"
+const ISOLATION_WORKFLOW = `export const meta = { name: "${ISOLATION_FIXTURE}", phases: ["isolate"] }
+export async function run(args, ctx) {
+  ctx.setPhase("isolate")
+  const par = await ctx.parallel([
+    async () => "ok-1",
+    async () => { throw new Error("boom-arm") },
+    async () => "ok-3",
+  ])
+  const pipe = await ctx.pipeline(
+    ["good", "bad"],
+    async (item) => { if (item === "bad") throw new Error("boom-stage"); return item.toUpperCase() },
+    async (prev) => prev + "!",
+  )
+  return { par, pipe }
+}
+`
+
 describe("Workflow", () => {
   it.instance("pipeline runs stages per item without a barrier and supports heterogeneous types", () =>
     Effect.gen(function* () {
@@ -375,6 +396,27 @@ describe("Workflow", () => {
       // Untergrenze: 6 Tasks à ~40ms bei Limit 2 erreichen zuverlässig peak 2 —
       // schützt gegen versehentliches Über-Clamping des Limits auf 1.
       expect(result.peak).toBeGreaterThanOrEqual(2)
+    }),
+  )
+
+  it.instance("parallel & pipeline isolate a thrown arm to null; the run still completes", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => writeWorkflow(test.directory, ISOLATION_FIXTURE, ISOLATION_WORKFLOW))
+      const workflow = yield* Workflow.Service
+      const run = yield* workflow.start({ name: ISOLATION_FIXTURE, args: {} })
+      const waited = yield* workflow.wait({ id: run.id })
+      const done = waited.run ?? (yield* Effect.fail(new Error("isolation workflow did not finish")))
+      // A failed fan-out arm no longer aborts the whole run.
+      expect(done.status).toBe("completed")
+      const result = done.result as { par: (string | null)[]; pipe: (string | null)[] }
+      // The thrown parallel arm is null; its siblings are unaffected, in order.
+      expect(result.par).toEqual(["ok-1", null, "ok-3"])
+      // The thrown pipeline item is null (its stage 2 is skipped); the good item
+      // flows through both stages.
+      expect(result.pipe).toEqual(["GOOD!", null])
+      // Both isolated failures are recorded on the run for visibility.
+      expect(done.logs.filter((l) => l.message.includes("isolated"))).toHaveLength(2)
     }),
   )
 
