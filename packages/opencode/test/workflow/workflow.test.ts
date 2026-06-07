@@ -1066,4 +1066,57 @@ export async function run(args, ctx) {
       })
     }),
   )
+
+  function errorPromptOps(errorName: string, errorMessage: string) {
+    const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+      prompt: (input) =>
+        Effect.gen(function* () {
+          if (input.noReply) return assistantReply()
+          const info = {
+            id: "msg_test_err",
+            role: "assistant",
+            providerID: "test",
+            modelID: "test-model",
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            error: {
+              name: errorName,
+              data: { message: errorMessage },
+            },
+          }
+          return { info, parts: [] } as unknown as SessionV1.WithParts
+        }),
+      cancel: () => Effect.void,
+    }
+    return ops
+  }
+
+  it.instance("agent step with a provider error fails the workflow run", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "agent-error",
+          `export const meta = { name: "agent-error", phases: ["run"] }
+export async function run(args, ctx) {
+  ctx.setPhase("run")
+  const result = await ctx.agent({ prompt: "do agent prompt" })
+  return { result }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const run = yield* workflow.start({
+        name: "agent-error",
+        prompt: errorPromptOps("APIError", "Rate limit exceeded"),
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("failed")
+      expect(done.run?.error).toContain("Rate limit exceeded")
+      expect(done.run?.agents.some((a) => a.status === "failed")).toBe(true)
+    }),
+  )
 })

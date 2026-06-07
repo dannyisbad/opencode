@@ -1350,7 +1350,7 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
         delete result.properties
         delete result.required
       }
-
+      delete result.additionalProperties
       return result
     }
 

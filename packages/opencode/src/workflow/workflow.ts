@@ -234,6 +234,13 @@ export class StructuredOutputError extends Schema.TaggedErrorClass<StructuredOut
   },
 ) {}
 
+export class AgentStepError extends Schema.TaggedErrorClass<AgentStepError>()(
+  "WorkflowAgentStepError",
+  {
+    message: Schema.String,
+  },
+) {}
+
 /**
  * Raised at the top of `ctx.agent` (right after the abort-signal checkpoint)
  * when the run was started with a budget and that budget is exhausted
@@ -1077,6 +1084,21 @@ export const layer = Layer.effect(
                 node.model = `${message.info.providerID}/${message.info.modelID}`
                 node.cost = message.info.cost
                 node.tokens = message.info.tokens
+              }
+              if (message.info.role === "assistant" && message.info.error) {
+                if (message.info.error.name !== "StructuredOutputError" || !agentInput.schema) {
+                  const err = message.info.error
+                  const errMsg =
+                    err.data && typeof err.data === "object" && "message" in err.data && typeof err.data.message === "string"
+                      ? err.data.message
+                      : "message" in err && typeof err.message === "string"
+                        ? err.message
+                        : JSON.stringify(err)
+                  node.output = assistantText(message)
+                  return yield* new AgentStepError({
+                    message: `Agent step failed: ${err.name || "UnknownError"}: ${errMsg}`,
+                  })
+                }
               }
               const structured =
                 message.info.role === "assistant" ? message.info.structured : undefined
