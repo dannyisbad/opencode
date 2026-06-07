@@ -8,6 +8,7 @@ import { Session } from "@/session/session"
 import type { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
 import { Database } from "@opencode-ai/core/database/database"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { type DeepMutable, withStatics } from "@opencode-ai/core/schema"
 import type {
@@ -1059,11 +1060,24 @@ export const layer = Layer.effect(
             Effect.gen(function* () {
               const selected = agentInput.agent ? yield* agents.get(agentInput.agent) : yield* agents.defaultInfo()
               const modelInfo = agentInput.model ? Provider.parseModel(agentInput.model) : selected.model
+              let parentPermission: PermissionV1.Ruleset = []
+              if (active.run.session_id) {
+                const parentSession = yield* sessions
+                  .get(SessionID.make(active.run.session_id))
+                  .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)))
+                if (parentSession?.permission) {
+                  parentPermission = parentSession.permission
+                }
+              }
               const session = yield* sessions.create({
                 parentID: active.run.session_id ? SessionID.make(active.run.session_id) : undefined,
                 title: `${active.run.workflow} ${node.id} (@${selected.name} subagent)`,
                 agent: selected.name,
                 model: modelInfo ? { id: modelInfo.modelID, providerID: modelInfo.providerID } : undefined,
+                permission: [
+                  ...parentPermission,
+                  { permission: "skill", pattern: "*", action: "deny" },
+                ],
               })
               node.agent = selected.name
               if (modelInfo) node.model = `${modelInfo.providerID}/${modelInfo.modelID}`
