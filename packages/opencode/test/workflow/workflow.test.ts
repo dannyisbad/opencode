@@ -1119,4 +1119,267 @@ export async function run(args, ctx) {
       expect(done.run?.agents.some((a) => a.status === "failed")).toBe(true)
     }),
   )
+
+  it.instance("agent coordination test: research, loop refinement with feedback, adversarial verification, and synthesis", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "coordination-test",
+          `export const meta = { name: "coordination-test", phases: ["research", "refinement", "verification", "synthesis"] }
+export async function run(args, ctx) {
+  ctx.setPhase("research")
+  const research = await ctx.agent({ prompt: "conduct research on task" })
+
+  ctx.setPhase("refinement")
+  const draft = await ctx.agent({ prompt: "draft solution based on research: " + research.text })
+
+  ctx.setPhase("verification")
+  const verified = await ctx.adversarial({
+    worker: draft,
+    rubric: ["must be accurate", "must be complete"]
+  })
+
+  ctx.setPhase("synthesis")
+  const report = await ctx.synthesize({
+    agents: [research, draft, { text: "Verification status: " + verified.verification.pass + ", evidence: " + verified.verification.evidence.join(", "), data: null }],
+    prompt: "Synthesize the coordination results into a final report."
+  })
+
+  return { report: report.text, verified }
+}
+`,
+          "ts",
+        ),
+      )
+
+      const promptsReceived: string[] = []
+      const workflow = yield* Workflow.Service
+      const coordinationPromptOps = () => {
+        const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+          prompt: (input) =>
+            Effect.gen(function* () {
+              if (input.noReply) return assistantReply()
+              const promptText = input.parts.find((p) => p.type === "text")?.text ?? ""
+              promptsReceived.push(promptText)
+
+              if (input.format) {
+                // Verifier agent call
+                const structuredData = {
+                  pass: true,
+                  confidence: 0.98,
+                  issues: [],
+                  evidence: ["accurate and complete"]
+                }
+                return {
+                  info: {
+                    id: "msg_verifier",
+                    role: "assistant",
+                    providerID: "test",
+                    modelID: "test-model",
+                    cost: 0,
+                    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                    structured: structuredData,
+                  },
+                  parts: [{
+                    type: "text",
+                    text: JSON.stringify(structuredData)
+                  }],
+                } as unknown as SessionV1.WithParts
+              }
+
+              if (promptText.includes("conduct research")) {
+                return {
+                  info: {
+                    id: "msg_research",
+                    role: "assistant",
+                    providerID: "test",
+                    modelID: "test-model",
+                    cost: 0,
+                    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                  },
+                  parts: [{ type: "text", text: "Research Output: Codebase uses Effect TS extensively." }],
+                } as unknown as SessionV1.WithParts
+              }
+
+              if (promptText.includes("draft solution")) {
+                return {
+                  info: {
+                    id: "msg_draft",
+                    role: "assistant",
+                    providerID: "test",
+                    modelID: "test-model",
+                    cost: 0,
+                    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                  },
+                  parts: [{ type: "text", text: "Draft Output: Implement workflow E2E testing." }],
+                } as unknown as SessionV1.WithParts
+              }
+
+              if (promptText.includes("Synthesize")) {
+                return {
+                  info: {
+                    id: "msg_synthesis",
+                    role: "assistant",
+                    providerID: "test",
+                    modelID: "test-model",
+                    cost: 0,
+                    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                  },
+                  parts: [{ type: "text", text: "Synthesis Output: Final verified report on Effect TS workflow testing." }],
+                } as unknown as SessionV1.WithParts
+              }
+
+              return {
+                info: {
+                  id: "msg_default",
+                  role: "assistant",
+                  providerID: "test",
+                  modelID: "test-model",
+                  cost: 0,
+                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                },
+                parts: [{ type: "text", text: "default response" }],
+              } as unknown as SessionV1.WithParts
+            }),
+          cancel: () => Effect.void,
+        }
+        return ops
+      }
+
+      const run = yield* workflow.start({
+        name: "coordination-test",
+        prompt: coordinationPromptOps(),
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+
+      // Verification of Quality & Coordination Flow:
+      
+      // 1. Verify that Agent 2's prompt successfully received Agent 1's research output (context flow)
+      const draftPrompt = promptsReceived.find(p => p.includes("draft solution"))
+      expect(draftPrompt).toContain("Research Output: Codebase uses Effect TS extensively.")
+
+      // 2. Verify that Verifier Agent's prompt contains the draft solution
+      const verifierPrompt = promptsReceived.find(p => p.includes("Judge the worker output"))
+      expect(verifierPrompt).toContain("Draft Output: Implement workflow E2E testing.")
+      expect(verifierPrompt).toContain("must be accurate")
+      expect(verifierPrompt).toContain("must be complete")
+
+      // 3. Verify that Synthesis Agent's prompt receives outputs from all previous stages
+      const synthesisPrompt = promptsReceived.find(p => p.includes("Synthesize"))
+      expect(synthesisPrompt).toContain("Research Output: Codebase uses Effect TS extensively.")
+      expect(synthesisPrompt).toContain("Draft Output: Implement workflow E2E testing.")
+      expect(synthesisPrompt).toContain("Verification status: true")
+
+      // 4. Verify the final result quality
+      const result = done.run?.result as { report: string }
+      expect(result.report).toBe("Synthesis Output: Final verified report on Effect TS workflow testing.")
+    }),
+  )
+
+  it.instance("agent coordination test: loop refinement with verifier feedback", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "loop-refinement",
+          `export const meta = { name: "loop-refinement", phases: ["run"] }
+export async function run(args, ctx) {
+  const loopResult = await ctx.loop({
+    fn: async (i, prev) => {
+      if (prev) {
+        return { prompt: "improve draft based on feedback: " + prev.text }
+      }
+      return { prompt: "create initial draft" }
+    },
+    until: async (result, i) => {
+      // Run a verifier agent on the result
+      const verification = await ctx.agent({
+        prompt: "Verify draft quality: " + result.text
+      })
+      ctx.log("Iteration " + i + " verification: " + verification.text)
+      return verification.text.includes("PASS") || i >= 2
+    },
+    maxIterations: 3
+  })
+  return { loopResult: loopResult.map(r => r.text) }
+}
+`,
+          "ts",
+        ),
+      )
+
+      const promptsReceived: string[] = []
+      const workflow = yield* Workflow.Service
+      const loopPromptOps = () => {
+        const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+          prompt: (input) =>
+            Effect.gen(function* () {
+              if (input.noReply) return assistantReply()
+              const promptText = input.parts.find((p) => p.type === "text")?.text ?? ""
+              promptsReceived.push(promptText)
+
+              if (promptText.includes("create initial draft")) {
+                return {
+                  info: { id: "msg_d1", role: "assistant", providerID: "test", modelID: "test", cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+                  parts: [{ type: "text", text: "Draft V1" }],
+                } as unknown as SessionV1.WithParts
+              }
+
+              if (promptText.includes("Verify draft quality: Draft V1")) {
+                return {
+                  info: { id: "msg_v1", role: "assistant", providerID: "test", modelID: "test", cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+                  parts: [{ type: "text", text: "FAIL: Missing parameters" }],
+                } as unknown as SessionV1.WithParts
+              }
+
+              if (promptText.includes("improve draft based on feedback: Draft V1")) {
+                return {
+                  info: { id: "msg_d2", role: "assistant", providerID: "test", modelID: "test", cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+                  parts: [{ type: "text", text: "Draft V2 with parameters" }],
+                } as unknown as SessionV1.WithParts
+              }
+
+              if (promptText.includes("Verify draft quality: Draft V2")) {
+                return {
+                  info: { id: "msg_v2", role: "assistant", providerID: "test", modelID: "test", cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+                  parts: [{ type: "text", text: "PASS: Excellent quality" }],
+                } as unknown as SessionV1.WithParts
+              }
+
+              return {
+                info: { id: "msg_def", role: "assistant", providerID: "test", modelID: "test", cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+                parts: [{ type: "text", text: "default" }],
+              } as unknown as SessionV1.WithParts
+            }),
+          cancel: () => Effect.void,
+        }
+        return ops
+      }
+
+      const run = yield* workflow.start({
+        name: "loop-refinement",
+        prompt: loopPromptOps(),
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+
+      // Verification of Quality Loop Coordination:
+      
+      // 1. Verify we looped because of the verifier feedback
+      expect(promptsReceived).toContain("improve draft based on feedback: Draft V1")
+      
+      // 2. Verify that iteration 2 was run with Draft V2 and passed
+      expect(promptsReceived).toContain("Verify draft quality: Draft V2 with parameters")
+      
+      // 3. Verify that the loop exited on PASS and did not run the 3rd iteration
+      expect(promptsReceived.filter(p => p.includes("improve draft")).length).toBe(1)
+      
+      const result = done.run?.result as { loopResult: string[] }
+      expect(result.loopResult).toEqual(["Draft V1", "Draft V2 with parameters"])
+    }),
+  )
 })
