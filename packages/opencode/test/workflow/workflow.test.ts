@@ -360,6 +360,25 @@ export async function run(args, ctx) {
 }
 `
 
+// Declared-args-Fixture: meta.arguments deklariert number/boolean/string mit
+// Defaults. Der Workflow gibt die Args zurück, die run() tatsächlich empfängt —
+// nach Coercion + Default-Anwendung an der Engine-Grenze.
+const ARGS_FIXTURE = "declared-args"
+const ARGS_WORKFLOW = `export const meta = {
+  name: "${ARGS_FIXTURE}",
+  phases: ["args"],
+  arguments: {
+    count: { type: "number" },
+    flag: { type: "boolean", default: false },
+    label: { type: "string", default: "hi" },
+  },
+}
+export async function run(args, ctx) {
+  ctx.setPhase("args")
+  return { received: args }
+}
+`
+
 describe("Workflow", () => {
   it.instance("pipeline runs stages per item without a barrier and supports heterogeneous types", () =>
     Effect.gen(function* () {
@@ -417,6 +436,36 @@ describe("Workflow", () => {
       expect(result.pipe).toEqual(["GOOD!", null])
       // Both isolated failures are recorded on the run for visibility.
       expect(done.logs.filter((l) => l.message.includes("isolated"))).toHaveLength(2)
+    }),
+  )
+
+  it.instance("start coerces declared arguments and applies defaults at the boundary", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => writeWorkflow(test.directory, ARGS_FIXTURE, ARGS_WORKFLOW))
+      const workflow = yield* Workflow.Service
+      // count supplied as a string → coerced to number; flag "true" → boolean;
+      // label omitted → declared default applied.
+      const run = yield* workflow.start({ name: ARGS_FIXTURE, args: { count: "3", flag: "true" } })
+      const waited = yield* workflow.wait({ id: run.id })
+      const done = waited.run ?? (yield* Effect.fail(new Error("args workflow did not finish")))
+      expect(done.status).toBe("completed")
+      const result = done.result as { received: Record<string, unknown> }
+      expect(result.received).toEqual({ count: 3, flag: true, label: "hi" })
+      // The persisted row reflects the coerced args, not the raw input.
+      expect(done.args).toEqual({ count: 3, flag: true, label: "hi" })
+    }),
+  )
+
+  it.instance("start rejects a non-finite number argument with a precise InvalidError", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => writeWorkflow(test.directory, ARGS_FIXTURE, ARGS_WORKFLOW))
+      const workflow = yield* Workflow.Service
+      const failed = yield* workflow.start({ name: ARGS_FIXTURE, args: { count: "notanumber" } }).pipe(Effect.flip)
+      expect(failed._tag).toBe("WorkflowInvalidError")
+      // The error names the offending argument so the failure is actionable.
+      if (failed._tag === "WorkflowInvalidError") expect(failed.message).toContain("count")
     }),
   )
 

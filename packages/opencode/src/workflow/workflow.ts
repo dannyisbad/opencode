@@ -600,6 +600,65 @@ async function discover(directories: readonly string[]) {
     .toSorted((a, b) => a.name.localeCompare(b.name))
 }
 
+// Validate & coerce declared workflow arguments at the engine boundary, BEFORE
+// run() ever sees them. The supplied value wins; otherwise the declared default
+// is applied; both go through the same coercion:
+//   - number:  strings are trimmed then parsed via Number(); an empty/whitespace
+//              string is rejected (Number("") is 0, which would silently swallow
+//              a blank input as 0). Non-number/non-parseable -> InvalidError.
+//              (hex/exponent strings are accepted, matching JSON/HTTP numbers.)
+//   - boolean: only an actual boolean or the strings "true"/"false"; else error.
+//   - string:  a primitive non-string (number/boolean) is String()-coerced; a
+//              non-primitive (object/array) is left unchanged (no honest string).
+// An argument with no declared type, or not declared in meta.arguments at all,
+// passes through verbatim. Returns the coerced map (or undefined when none was
+// supplied and there are no defaults), or an InvalidError naming the argument.
+function coerceArgs(
+  args: Record<string, unknown> | undefined,
+  declared: Meta["arguments"],
+  path: string,
+): Record<string, unknown> | undefined | InvalidError {
+  if (!declared) return args
+  const supplied = args ?? {}
+  const result: Record<string, unknown> = { ...supplied }
+  for (const [name, argument] of Object.entries(declared)) {
+    const hasValue = name in supplied
+    if (!hasValue && argument.default === undefined) continue
+    const value = hasValue ? supplied[name] : argument.default
+    if (argument.type === "number") {
+      const trimmed = typeof value === "string" ? value.trim() : value
+      const coerced =
+        typeof trimmed === "number" ? trimmed : typeof trimmed === "string" && trimmed !== "" ? Number(trimmed) : NaN
+      if (!Number.isFinite(coerced))
+        return new InvalidError({
+          path,
+          message: `argument "${name}" must be a finite number, got ${JSON.stringify(value)}`,
+        })
+      result[name] = coerced
+      continue
+    }
+    if (argument.type === "boolean") {
+      const coerced =
+        typeof value === "boolean" ? value : value === "true" ? true : value === "false" ? false : undefined
+      if (coerced === undefined)
+        return new InvalidError({
+          path,
+          message: `argument "${name}" must be a boolean ("true"/"false"), got ${JSON.stringify(value)}`,
+        })
+      result[name] = coerced
+      continue
+    }
+    if (argument.type === "string" && typeof value !== "string") {
+      // Only primitive non-strings get String(); objects/arrays are left as-is.
+      if (typeof value === "number" || typeof value === "boolean") result[name] = String(value)
+      continue
+    }
+    // No declared type, or value already matches it: pass through unchanged.
+    if (!hasValue) result[name] = value
+  }
+  return result
+}
+
 function projectConfigDir(ctx: { directory: string; worktree: string }) {
   return path.join(ctx.worktree === "/" ? ctx.directory : ctx.worktree, ".opencode")
 }
@@ -993,6 +1052,13 @@ export const layer = Layer.effect(
         catch: (error) =>
           isInvalidError(error) ? error : new InvalidError({ path: workflow.path, message: errorText(error) }),
       })
+      // Validate & coerce declared arguments at the boundary, BEFORE the run is
+      // created — a bad arg fails precisely (InvalidError naming the argument)
+      // instead of surfacing as a confusing error deep inside module.run(). The
+      // coerced map (defaults applied, types normalized) is what run() and the
+      // persisted row both see. Workflows with no declared `arguments` pass through.
+      const args = coerceArgs(input.args, module.meta.arguments, workflow.path)
+      if (args instanceof InvalidError) return yield* args
       const inst = yield* InstanceState.get(state)
       const id = RunID.ascending()
       const started_at = yield* Clock.currentTimeMillis
@@ -1003,7 +1069,7 @@ export const layer = Layer.effect(
           id,
           session_id: session.id,
           workflow: workflow.name,
-          args: input.args ?? undefined,
+          args: args ?? undefined,
           definition: {
             name: workflow.name,
             path: workflow.path,
@@ -1211,7 +1277,7 @@ export const layer = Layer.effect(
       active.fiber = yield* Effect.promise((signal) => {
         runSignal = signal
         return module.run(
-          input.args ?? {},
+          args ?? {},
           createContext({
             active,
             agent,
