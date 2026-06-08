@@ -1203,8 +1203,44 @@ export const layer = Layer.effect(
               node.message_id = message.info.id
               if (message.info.role === "assistant") {
                 node.model = `${message.info.providerID}/${message.info.modelID}`
-                node.cost = message.info.cost
-                node.tokens = message.info.tokens
+                // `prompt.prompt` is an agentic loop: a single ctx.agent step that
+                // uses tools persists MANY assistant messages (one per turn), each
+                // with its own per-turn cost/tokens, but only ever RETURNS the last
+                // one. Charging just `message.info.cost` discards every intermediate
+                // turn's spend — the dashboard under-reports and the budget under-
+                // counts. Sum cost/tokens over ALL assistant messages of this child
+                // session instead. `sessions.messages` is the raw per-message list
+                // (not a cumulative pre-aggregate), so summing cannot double-count;
+                // the returned `message` is itself one of those rows, so it is NOT
+                // added on top. A single-turn session ⇒ one assistant message ⇒ the
+                // sum equals that message (identical to the old single-message read).
+                const assistants = (yield* sessions.messages({ sessionID: session.id }).pipe(Effect.orDie))
+                  .map((m) => m.info)
+                  .filter((info) => info.role === "assistant")
+                node.cost = assistants.reduce((sum, info) => sum + info.cost, 0)
+                // Keep `total` optional exactly as the per-message tokens schema has
+                // it: only emit a summed total when at least one message carried one,
+                // so a single-message session stays byte-for-byte identical.
+                const totals = assistants.map((info) => info.tokens.total).filter((t) => t !== undefined)
+                node.tokens = assistants.reduce(
+                  (acc, info) => ({
+                    total: acc.total,
+                    input: acc.input + info.tokens.input,
+                    output: acc.output + info.tokens.output,
+                    reasoning: acc.reasoning + info.tokens.reasoning,
+                    cache: {
+                      read: acc.cache.read + info.tokens.cache.read,
+                      write: acc.cache.write + info.tokens.cache.write,
+                    },
+                  }),
+                  {
+                    total: totals.length > 0 ? totals.reduce((sum, t) => sum + t, 0) : undefined,
+                    input: 0,
+                    output: 0,
+                    reasoning: 0,
+                    cache: { read: 0, write: 0 },
+                  } as NonNullable<AgentRun["tokens"]>,
+                )
               }
               if (message.info.role === "assistant" && message.info.error) {
                 if (message.info.error.name !== "StructuredOutputError" || !agentInput.schema) {

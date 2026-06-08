@@ -4,6 +4,8 @@ import type { SessionPrompt } from "@/session/prompt"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { WorkflowRunTable } from "@opencode-ai/core/workflow/sql"
+import { MessageTable } from "@opencode-ai/core/session/sql"
+import { MessageID } from "@opencode-ai/core/v1/session"
 import { eq } from "drizzle-orm"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -176,27 +178,73 @@ export async function run(args, ctx) {
 // FAILS structured-output can still report what it actually cost — exactly the
 // failed-but-paid case the budget must charge for. Defaults to 0 to leave the
 // existing structured-output callers unchanged.
-function structuredPromptOps(mode: "structured" | "undefined" | "error", cost = 0) {
+type AssistantTurn = {
+  cost: number
+  tokens?: { total?: number; input: number; output: number; reasoning: number; cache: { read: number; write: number } }
+  structured?: unknown
+  error?: unknown
+}
+
+// Mirror the production session layer: SessionPrompt.runLoop persists ONE
+// assistant message per turn (queryable via sessions.messages) and RETURNS only
+// the last. These fakes write each turn into the SAME MessageTable the engine's
+// all-turns cost/token sum reads from (the threaded `db` is the same in-memory
+// connection the engine uses), then resolve with the LAST turn's info (the engine
+// still uses that single message for message_id / output / structured-output
+// detection). A single-turn fake persists exactly one row ⇒ the summed result
+// equals it, identical to the previous single-message behaviour. `db` is threaded
+// (not resolved via Database.Service inside) so the fake's Effect keeps the
+// `R = never` shape SessionPrompt.Interface["prompt"] requires.
+function persistTurns(db: Database.Interface["db"], sessionID: string, turns: AssistantTurn[]) {
+  return Effect.gen(function* () {
+    let last: SessionV1.WithParts | undefined
+    for (const turn of turns) {
+      const id = MessageID.ascending()
+      const data: Record<string, unknown> = {
+        role: "assistant",
+        providerID: "test",
+        modelID: "test-model",
+        cost: turn.cost,
+        tokens: turn.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        ...("structured" in turn ? { structured: turn.structured } : {}),
+        ...(turn.error ? { error: turn.error } : {}),
+      }
+      yield* db
+        .insert(MessageTable)
+        .values({
+          id,
+          session_id: sessionID,
+          time_created: Date.now(),
+          time_updated: Date.now(),
+          data,
+        } as unknown as typeof MessageTable.$inferInsert)
+        .run()
+        .pipe(Effect.orDie)
+      last = { info: { id, sessionID, ...data }, parts: [{ type: "text", text: "ok" }] } as unknown as SessionV1.WithParts
+    }
+    return last!
+  })
+}
+
+function structuredPromptOps(db: Database.Interface["db"], mode: "structured" | "undefined" | "error", cost = 0) {
   const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
     prompt: (input) =>
       Effect.gen(function* () {
         if (input.noReply) return assistantReply()
-        const info: Record<string, unknown> = {
-          role: "assistant",
-          providerID: "test",
-          modelID: "test-model",
+        const turn: AssistantTurn = {
           cost,
           tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         }
-        if (mode === "structured") info.structured = SCHEMA_OBJECT
+        if (mode === "structured") turn.structured = SCHEMA_OBJECT
         if (mode === "error")
-          info.error = {
+          turn.error = {
             name: "StructuredOutputError",
             data: { message: "Model did not produce structured output", retries: 0 },
           }
+        const last = yield* persistTurns(db, input.sessionID, [turn])
         const parts =
           mode === "undefined" || mode === "error" ? [{ type: "text", text: "here is some plaintext" }] : []
-        return { info: { ...info, id: "msg_test" }, parts } as unknown as SessionV1.WithParts
+        return { info: last.info, parts } as unknown as SessionV1.WithParts
       }),
     cancel: () => Effect.void,
   }
@@ -208,22 +256,16 @@ function structuredPromptOps(mode: "structured" | "undefined" | "error", cost = 
 // bildet GENAU diese Telemetrie-Form nach: jede beantwortete Agent-Nachricht
 // trägt `cost` (und `tokens`, wie die echte Session), sodass der Engine pro
 // Step das Restbudget korrekt dekrementieren kann.
-function costPromptOps(cost: number) {
+function costPromptOps(db: Database.Interface["db"], cost: number, turns?: number) {
   const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
     prompt: (input) =>
       Effect.gen(function* () {
         if (input.noReply) return assistantReply()
-        return {
-          info: {
-            id: "msg_test",
-            role: "assistant",
-            providerID: "test",
-            modelID: "test-model",
-            cost,
-            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-          },
-          parts: [{ type: "text", text: "ok" }],
-        } as unknown as SessionV1.WithParts
+        // `turns` (default 1) lets a test simulate a multi-turn agent: each turn
+        // persists its own `cost`, exactly the case the all-turns budget sum must
+        // capture (a single-turn fake stays identical to the old behaviour).
+        const perTurn: AssistantTurn = { cost, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }
+        return yield* persistTurns(db, input.sessionID, Array.from({ length: turns ?? 1 }, () => perTurn))
       }),
     cancel: () => Effect.void,
   }
@@ -256,6 +298,18 @@ export async function run(args, ctx) {
 `
 
 // Liest ctx.budgetRemaining OHNE gesetztes Budget — muss Infinity sein.
+// Multi-turn fixture: a single ctx.agent step whose child session runs several
+// assistant turns. The all-turns budget sum must charge the TOTAL of every turn,
+// not just the last one the prompt loop returns.
+const BUDGET_MULTITURN_FIXTURE = "budget-multiturn"
+const BUDGET_MULTITURN_WORKFLOW = `export const meta = { name: "${BUDGET_MULTITURN_FIXTURE}", phases: ["run"] }
+export async function run(args, ctx) {
+  ctx.setPhase("run")
+  await ctx.agent({ prompt: "do a multi-turn task" })
+  return { budgetRemaining: ctx.budgetRemaining }
+}
+`
+
 const BUDGET_UNLIMITED_FIXTURE = "budget-unlimited"
 const BUDGET_UNLIMITED_WORKFLOW = `export const meta = { name: "${BUDGET_UNLIMITED_FIXTURE}", phases: ["run"] }
 export async function run(args, ctx) {
@@ -739,10 +793,11 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
         writeWorkflow(test.directory, SCHEMA_FAILING_FIXTURE, schemaWorkflow(SCHEMA_FAILING_FIXTURE)),
       )
       const workflow = yield* Workflow.Service
+      const { db } = yield* Database.Service
       const run = yield* workflow.start({
         name: SCHEMA_FAILING_FIXTURE,
         args: {},
-        prompt: structuredPromptOps("error"),
+        prompt: structuredPromptOps(db, "error"),
       })
       const done = yield* workflow.wait({ id: run.id })
       expect(done.run?.status).toBe("failed")
@@ -759,10 +814,11 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
         writeWorkflow(test.directory, SCHEMA_UNDEFINED_FIXTURE, schemaWorkflow(SCHEMA_UNDEFINED_FIXTURE)),
       )
       const workflow = yield* Workflow.Service
+      const { db } = yield* Database.Service
       const run = yield* workflow.start({
         name: SCHEMA_UNDEFINED_FIXTURE,
         args: {},
-        prompt: structuredPromptOps("undefined"),
+        prompt: structuredPromptOps(db, "undefined"),
       })
       const done = yield* workflow.wait({ id: run.id })
       expect(done.run?.status).toBe("failed")
@@ -777,10 +833,11 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
         writeWorkflow(test.directory, SCHEMA_SUCCESS_FIXTURE, schemaWorkflow(SCHEMA_SUCCESS_FIXTURE)),
       )
       const workflow = yield* Workflow.Service
+      const { db } = yield* Database.Service
       const run = yield* workflow.start({
         name: SCHEMA_SUCCESS_FIXTURE,
         args: {},
-        prompt: structuredPromptOps("structured"),
+        prompt: structuredPromptOps(db, "structured"),
       })
       const done = yield* workflow.wait({ id: run.id })
       expect(done.run?.status).toBe("completed")
@@ -798,10 +855,11 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
       const workflow = yield* Workflow.Service
       // Budget 1.0 USD, jeder Step kostet 1.0 — nach Step 1 ist das Budget
       // erschöpft (Rest 0), also scheitert der zweite ctx.agent am Gate.
+      const { db } = yield* Database.Service
       const run = yield* workflow.start({
         name: BUDGET_FIXTURE,
         args: {},
-        prompt: costPromptOps(1),
+        prompt: costPromptOps(db, 1),
         budget: 1,
       })
       const done = yield* workflow.wait({ id: run.id })
@@ -822,10 +880,11 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
         writeWorkflow(test.directory, BUDGET_REMAINING_FIXTURE, BUDGET_REMAINING_WORKFLOW),
       )
       const workflow = yield* Workflow.Service
+      const { db } = yield* Database.Service
       const run = yield* workflow.start({
         name: BUDGET_REMAINING_FIXTURE,
         args: {},
-        prompt: costPromptOps(0.25),
+        prompt: costPromptOps(db, 0.25),
         budget: 1,
       })
       const done = yield* workflow.wait({ id: run.id })
@@ -838,6 +897,31 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
     }),
   )
 
+  it.instance("budget sums cost across ALL of a sub-agent's turns, not just the last", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => writeWorkflow(test.directory, BUDGET_MULTITURN_FIXTURE, BUDGET_MULTITURN_WORKFLOW))
+      const workflow = yield* Workflow.Service
+      const { db } = yield* Database.Service
+      // The single ctx.agent step runs 3 turns à 0.40 USD. The engine must charge
+      // the SUM (1.20), not just the last turn's 0.40 (the pre-fix behaviour).
+      const run = yield* workflow.start({
+        name: BUDGET_MULTITURN_FIXTURE,
+        args: {},
+        prompt: costPromptOps(db, 0.4, 3),
+        budget: 2,
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      // The agent node records the all-turns sum, not the last turn.
+      expect(done.run?.agents[0]?.cost).toBeCloseTo(1.2, 5)
+      // budgetRemaining = 2 − 1.2 = 0.8 (would wrongly read 1.6 if only the last
+      // 0.40 turn were charged).
+      const result = done.run?.result as { budgetRemaining: number }
+      expect(result.budgetRemaining).toBeCloseTo(0.8, 5)
+    }),
+  )
+
   it.instance("no budget set means unlimited (Infinity) — unchanged default", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -845,10 +929,11 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
         writeWorkflow(test.directory, BUDGET_UNLIMITED_FIXTURE, BUDGET_UNLIMITED_WORKFLOW),
       )
       const workflow = yield* Workflow.Service
+      const { db } = yield* Database.Service
       const run = yield* workflow.start({
         name: BUDGET_UNLIMITED_FIXTURE,
         args: {},
-        prompt: costPromptOps(5),
+        prompt: costPromptOps(db, 5),
       })
       const done = yield* workflow.wait({ id: run.id })
       expect(done.run?.status).toBe("completed")
@@ -865,10 +950,11 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
       const workflow = yield* Workflow.Service
       // Schema-Agent scheitert (kein strukturiertes Ergebnis), hat aber 0.3 USD
       // gekostet. Der Workflow fängt den Fehler ab und läuft weiter.
+      const { db } = yield* Database.Service
       const run = yield* workflow.start({
         name: BUDGET_FAILED_PAID_FIXTURE,
         args: {},
-        prompt: structuredPromptOps("error", 0.3),
+        prompt: structuredPromptOps(db, "error", 0.3),
         budget: 1,
       })
       const done = yield* workflow.wait({ id: run.id })
