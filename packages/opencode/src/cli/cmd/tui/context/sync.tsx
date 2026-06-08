@@ -550,6 +550,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const session = result.session.get(sessionID)
           if (!session) return "idle"
           if (session.time.compacting) return "compacting"
+          if (session.revert) return "idle"
           const messages = store.message[sessionID] ?? []
           const last = messages.at(-1)
           if (!last) return "idle"
