@@ -209,15 +209,18 @@ export const TaskTool = Tool.define(
               {
                 type: "text",
                 synthetic: true,
-                text: renderOutput({
-                  sessionID: nextSession.id,
-                  state,
-                  summary:
-                    state === "completed"
-                      ? `Background task completed: ${params.description}`
-                      : `Background task failed: ${params.description}`,
-                  text,
-                }),
+                // Lead with a newline so the injected bubble separates cleanly.
+                text:
+                  "\n" +
+                  renderOutput({
+                    sessionID: nextSession.id,
+                    state,
+                    summary:
+                      state === "completed"
+                        ? `Background task completed: ${params.description}`
+                        : `Background task failed: ${params.description}`,
+                    text,
+                  }),
               },
             ],
           })

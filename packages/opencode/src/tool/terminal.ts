@@ -318,7 +318,9 @@ export const TerminalTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              const timeout = params.timeout ?? DEFAULT_TIMEOUT
+              // Foreground window: stay foreground this long, THEN auto-background
+              // (the command is not killed). Default 30s, NOT the legacy 2-min cap.
+              const timeout = params.timeout ?? AUTO_BACKGROUND_MS
 
               yield* ctx.ask({
                 permission: "terminal",
@@ -502,11 +504,19 @@ export const TerminalTool = Tool.define(
                     Effect.flatMap((r) =>
                       Effect.gen(function* () {
                         const code = r.kind === "exit" ? r.code : null
+                        const { output } = cleanOutput(buffer, params.command)
+                        const final = output || "(no output)"
                         const live = yield* InstanceState.get(sessionState)
                         const s = live.get(info.id)
-                        if (s) s.exitCode = code
-                        const { output } = cleanOutput(buffer, params.command)
-                        return output || "(no output)"
+                        // Retain the cleaned final output so a `read` AFTER the PTY
+                        // has exited + self-removed still returns it (a fast
+                        // backgrounded command would otherwise be unreadable — the
+                        // PTY is gone and the buffer lost).
+                        if (s) {
+                          s.exitCode = code
+                          s.buffer = final
+                        }
+                        return final
                       }),
                     ),
                   ),
@@ -536,14 +546,18 @@ export const TerminalTool = Tool.define(
                                 {
                                   type: "text",
                                   synthetic: true,
-                                  text: renderTerminalBackground({
-                                    sessionId: info.id,
-                                    state,
-                                    description: params.description,
-                                    exit: code,
-                                    text: res.info?.output ?? res.info?.error ?? "",
-                                    durationMs,
-                                  }),
+                                  // Lead with a newline so the injected bubble has
+                                  // breathing room from the preceding content.
+                                  text:
+                                    "\n" +
+                                    renderTerminalBackground({
+                                      sessionId: info.id,
+                                      state,
+                                      description: params.description,
+                                      exit: code,
+                                      text: res.info?.output ?? res.info?.error ?? "",
+                                      durationMs,
+                                    }),
                                 },
                               ],
                             })
@@ -804,16 +818,25 @@ export const TerminalTool = Tool.define(
               conn.onClose()
             }
 
-            const stripped = stripAnsi(newOutput)
-            const cleaned = stripped.trim()
-
+            const cleaned = stripAnsi(newOutput).trim()
             session.lastCursor = currentCursor
-            session.buffer += newOutput
 
             const exitCode = session.exitCode !== null ? session.exitCode : null
 
-            let finalOutput = cleaned
-            if (!finalOutput) finalOutput = "(no new output)"
+            let finalOutput: string
+            if (cleaned) {
+              // Live incremental output since the last read.
+              session.buffer += newOutput
+              finalOutput = cleaned
+            } else if (!conn && session.exitCode !== null && session.buffer) {
+              // PTY gone (a backgrounded command exited + self-removed): the job's
+              // exit handler stashed the cleaned final output in session.buffer —
+              // deliver it ONCE, then clear so later reads report no new output.
+              finalOutput = session.buffer
+              session.buffer = ""
+            } else {
+              finalOutput = "(no new output)"
+            }
 
             const truncated = yield* trunc.output(finalOutput)
 

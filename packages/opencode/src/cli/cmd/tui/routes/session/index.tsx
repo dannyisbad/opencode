@@ -1548,23 +1548,29 @@ const MIME_BADGE: Record<string, string> = {
 // compact Claude-Code-style line built HERE from the tag's structured attributes
 // (`label`/`exit`/`elapsed`), NOT the model-facing `<summary>` prose. Falls back
 // to the summary only when a producer didn't emit the structured attributes.
-function parseBackgroundCompletion(text: string): { state: "completed" | "error"; line: string } | undefined {
-  const m = /^\s*<(?:workflow_run|task|terminal_run)\b[^>]*\bstate="(completed|error|failed)"/.exec(text)
+function parseBackgroundCompletion(
+  text: string,
+): { state: "completed" | "error"; name: string; detail: string } | undefined {
+  const m = /^\s*<(workflow_run|task|terminal_run)\b[^>]*\bstate="(completed|error|failed)"/.exec(text)
   if (!m) return undefined
-  const state: "completed" | "error" = m[1] === "completed" ? "completed" : "error"
+  const kind = m[1]
+  const state: "completed" | "error" = m[2] === "completed" ? "completed" : "error"
   const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(text)?.[1]
   const label = attr("label")
   const exit = attr("exit")
   const elapsed = attr("elapsed")
+  const verb = state === "completed" ? "completed" : "failed"
   if (label) {
-    const verb = state === "completed" ? "completed" : "failed"
+    // opencode-native row style: `▣ <name> · <status> · <elapsed>`. Workflows get
+    // a "Workflow" prefix; terminals show their exit code.
+    const name = kind === "workflow_run" ? `Workflow ${label}` : label
     const exitStr = exit !== undefined ? ` (exit ${exit})` : ""
     const elapsedStr = elapsed ? ` · ${elapsed}` : ""
-    return { state, line: `${label}  ${verb}${exitStr}${elapsedStr}` }
+    return { state, name, detail: `${verb}${exitStr}${elapsedStr}` }
   }
   // Fallback for producers without structured attrs (e.g. legacy subagent tasks).
   const sm = /<summary>([\s\S]*?)<\/summary>/.exec(text)
-  return { state, line: (sm?.[1] ?? `Background task ${m[1]}`).trim() }
+  return { state, name: (sm?.[1] ?? `Background task ${verb}`).trim(), detail: "" }
 }
 
 function UserMessage(props: {
@@ -1614,14 +1620,20 @@ function UserMessage(props: {
         {(completion) => (
           <InlineToolRow
             id={props.message.id}
-            icon="✳"
-            color={theme.textMuted}
+            icon="▣"
+            color={theme.text}
+            iconColor={completion().state === "error" ? theme.error : theme.textMuted}
             errorColor={theme.error}
             complete={true}
             failed={completion().state === "error"}
             pending=""
           >
-            {completion().line}
+            <>
+              {completion().name}
+              <Show when={completion().detail}>
+                <span style={{ fg: theme.textMuted }}> · {completion().detail}</span>
+              </Show>
+            </>
           </InlineToolRow>
         )}
       </Show>
@@ -2087,8 +2099,9 @@ function Terminal(props: ToolProps<any>) {
   return (
     <Show when={bg()} fallback={<GenericTool {...props} />}>
       {(info) => (
-        <InlineTool icon="●" color={theme.textMuted} complete={true} pending="" part={props.part}>
-          {info().label}  running in background
+        <InlineTool icon="▣" iconColor={theme.textMuted} color={theme.text} complete={true} pending="" part={props.part}>
+          {info().label}
+          <span style={{ fg: theme.textMuted }}> · running in background</span>
         </InlineTool>
       )}
     </Show>

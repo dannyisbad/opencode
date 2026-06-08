@@ -280,7 +280,10 @@ function backgroundJobMessage(
 ) {
   const elapsed = durationMs != null ? ` in ${formatElapsed(durationMs)}` : ""
   const elapsedAttr = durationMs != null ? ` elapsed="${formatElapsed(durationMs)}"` : ""
+  // Lead with a newline so the injected completion bubble separates cleanly from
+  // whatever preceded it in the conversation.
   return [
+    "",
     `<workflow_run id="${runId}" state="${state}" kind="workflow" label="${attrSafe(workflow)}"${elapsedAttr}>`,
     `<summary>Dynamic workflow ${state}: ${workflow}${elapsed}</summary>`,
     state === "completed" ? "<workflow_result>" : "<workflow_error>",
@@ -574,6 +577,14 @@ export const WorkflowTool = Tool.define(
             const ops = promptOps(ctx)
             const instance = yield* InstanceState.context
             const projectRoot = instance.worktree === "/" ? instance.directory : instance.worktree
+            // A human-friendly label for the PRE-PLAN started bubble — the planner
+            // hasn't produced the real workflow name yet at this point, so derive
+            // one from the objective rather than showing the opaque `dynamic-job_xxx`
+            // file id. (The dashboard + completion bubble use the real planner name.)
+            const objectiveLabel =
+              params.objective && params.objective.length > 60
+                ? params.objective.slice(0, 57).trimEnd() + "…"
+                : (params.objective ?? "Dynamic workflow")
             const dynamicDir = path.join(projectRoot, ".opencode", "workflows", ".dynamic")
             const runId = Workflow.RunID.ascending()
             const workflowName = `dynamic-${runId.slice(0, 8)}`
@@ -711,25 +722,25 @@ export const WorkflowTool = Tool.define(
               })
 
               yield* ctx.metadata({
-                title: workflowName,
+                title: objectiveLabel,
                 metadata: {
                   runId,
-                  workflow: workflowName,
+                  workflow: objectiveLabel,
                   background: true,
                   jobId: job.id,
                 },
               })
 
               return {
-                title: `Dynamic workflow started: ${workflowName}`,
+                title: `Dynamic workflow started: ${objectiveLabel}`,
                 metadata: {
                   runId,
-                  workflow: workflowName,
+                  workflow: objectiveLabel,
                   background: true,
                   jobId: job.id,
                   timedOut: false,
                 },
-                output: backgroundGenerateStarted(runId, workflowName),
+                output: backgroundGenerateStarted(runId, objectiveLabel),
               }
             }
 
