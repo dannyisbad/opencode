@@ -15,6 +15,7 @@ import * as Tool from "./tool"
 import { trimDiff } from "./edit"
 import { Workflow } from "@/workflow/workflow"
 import { planDynamicWorkflow } from "@/workflow/planner"
+import { parseModelString } from "@/workflow/resilience"
 import { Config } from "@/config/config"
 
 const WORKFLOW_NAME_PATTERN = /^[A-Za-z0-9_-]+$/
@@ -62,6 +63,10 @@ const Parameters = Schema.Struct({
   overwrite: Schema.optional(Schema.Boolean).annotate({ description: "Overwrite an existing workflow file" }),
   objective: Schema.optional(Schema.String).annotate({
     description: "Natural language objective for action=generate. The planner will create a dynamic workflow tailored to this task.",
+  }),
+  model: Schema.optional(Schema.String).annotate({
+    description:
+      "Optional 'provider/model' override for action=generate (e.g. 'google/gemini-3.1-pro-preview'). Steers BOTH plan generation and every agent step of the generated workflow, taking precedence over the configured dynamic_workflows.model. Omit to use the configured/default model.",
   }),
 })
 
@@ -567,6 +572,7 @@ export const WorkflowTool = Tool.define(
                 run: Effect.gen(function* () {
                   const plan = yield* planDynamicWorkflow({
                     objective: params.objective!,
+                    model: parseModelString(params.model),
                   })
                   const generatedSource = plan.source
 
@@ -585,6 +591,7 @@ export const WorkflowTool = Tool.define(
                       permissionSessionID: ctx.sessionID,
                       source: generatedSource,
                       temporary: true,
+                      model: params.model,
                     })
                     .pipe(Effect.mapError(workflowError))
 
@@ -664,7 +671,10 @@ export const WorkflowTool = Tool.define(
             // hand-do the objective (writing source/task files into the repo),
             // which bypasses the entire workflow system. Surface the failure
             // instead so the agent reports it.
-            const planExit = yield* planDynamicWorkflow({ objective: params.objective }).pipe(Effect.exit)
+            const planExit = yield* planDynamicWorkflow({
+              objective: params.objective,
+              model: parseModelString(params.model),
+            }).pipe(Effect.exit)
             if (Exit.isFailure(planExit)) {
               const squashed = Cause.squash(planExit.cause)
               const reason = squashed instanceof Error ? squashed.message : String(squashed)
@@ -696,6 +706,7 @@ export const WorkflowTool = Tool.define(
                 permissionSessionID: ctx.sessionID,
                 source: generatedSource,
                 temporary: true,
+                model: params.model,
               })
               .pipe(Effect.mapError(workflowError))
 

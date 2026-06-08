@@ -1623,4 +1623,122 @@ export async function run(args, ctx) {
       expect(result.loopResult).toEqual(["Draft V1", "Draft V2 with parameters"])
     }),
   )
+
+  // Captures the resolved per-agent model (the `modelInfo` the engine passes to
+  // prompt.prompt) so the model-resolution precedence can be asserted directly.
+  function captureModelPromptOps(seen: Array<{ providerID: string; modelID: string } | undefined>) {
+    const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+      prompt: (input) =>
+        Effect.gen(function* () {
+          if (input.noReply) return assistantReply()
+          seen.push(input.model as { providerID: string; modelID: string } | undefined)
+          return {
+            info: {
+              id: "msg_test",
+              role: "assistant",
+              providerID: "test",
+              modelID: "test-model",
+              cost: 0,
+              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            },
+            parts: [{ type: "text", text: "ok" }],
+          } as unknown as SessionV1.WithParts
+        }),
+      cancel: () => Effect.void,
+    }
+    return ops
+  }
+
+  it.instance("per-run model param steers an agent step that requests no model of its own", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "model-override",
+          `export const meta = { name: "model-override", phases: ["run"] }
+export async function run(args, ctx) {
+  ctx.setPhase("run")
+  const result = await ctx.agent({ prompt: "do the thing" })
+  return { result }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const seen: Array<{ providerID: string; modelID: string } | undefined> = []
+      const run = yield* workflow.start({
+        name: "model-override",
+        prompt: captureModelPromptOps(seen),
+        model: "google/gemini-3.5-flash",
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(seen).toEqual([{ providerID: "google", modelID: "gemini-3.5-flash" }])
+    }),
+  )
+
+  it.instance("a step's own model beats the per-run model override", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "model-precedence",
+          `export const meta = { name: "model-precedence", phases: ["run"] }
+export async function run(args, ctx) {
+  ctx.setPhase("run")
+  const result = await ctx.agent({ prompt: "do the thing", model: "openai/gpt-step" })
+  return { result }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const seen: Array<{ providerID: string; modelID: string } | undefined> = []
+      const run = yield* workflow.start({
+        name: "model-precedence",
+        prompt: captureModelPromptOps(seen),
+        model: "google/gemini-3.5-flash",
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(seen).toEqual([{ providerID: "openai", modelID: "gpt-step" }])
+    }),
+  )
+
+  it.instance("a malformed per-run model degrades to the default (does not fail the run)", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "model-malformed",
+          `export const meta = { name: "model-malformed", phases: ["run"] }
+export async function run(args, ctx) {
+  ctx.setPhase("run")
+  const result = await ctx.agent({ prompt: "do the thing" })
+  return { result }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const seen: Array<{ providerID: string; modelID: string } | undefined> = []
+      // An empty string is unparseable → parseModelString returns undefined →
+      // active.model is undefined → resolution falls through to config/default.
+      // The run must still complete rather than erroring on a bad override.
+      const run = yield* workflow.start({
+        name: "model-malformed",
+        prompt: captureModelPromptOps(seen),
+        model: "",
+      })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(seen.length).toBe(1)
+    }),
+  )
 })

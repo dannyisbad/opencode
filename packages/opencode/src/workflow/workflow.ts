@@ -32,7 +32,7 @@ import type {
 import { WorkflowRunTable } from "./workflow.sql"
 import { Meta } from "./meta"
 import { MetaReader } from "./meta-reader"
-import { isTransientError, parseModelString } from "./resilience"
+import { isTransientError, parseModelString, type ModelDesc } from "./resilience"
 
 // Branded id for a workflow run. Follows the repo's ID convention (cf. SessionID
 // / MessageID in `session/schema.ts`): a `job_`-prefixed string carrying a
@@ -191,6 +191,14 @@ export type StartOptions = StartInput & {
   source?: string
   temporary?: boolean
   permissionSessionID?: SessionID
+  /**
+   * Per-run "provider/model" override for this workflow's agents. Resolved once
+   * at start into `Active.model` and applied to every agent step that doesn't
+   * request its own model, taking precedence over the global
+   * `dynamic_workflows.model` config. Set by the generate action's `model`
+   * param so a single call can steer the whole generated workflow.
+   */
+  model?: string
 }
 
 export type WaitInput = {
@@ -379,6 +387,13 @@ type Active = {
    * Read by `ctx.budgetRemaining`; gated against in `ctx.agent`.
    */
   budgetRemaining: number
+  /**
+   * Per-run model override (parsed from `StartOptions.model`), or undefined.
+   * Applied to every agent step that doesn't pass its own `model`, ahead of the
+   * global `dynamic_workflows.model` config. Lets one generate call pin the
+   * whole workflow to a model without touching config.
+   */
+  model?: ModelDesc
 }
 
 type State = {
@@ -1102,6 +1117,10 @@ export const layer = Layer.effect(
         // no-op, preserving the previous unlimited behavior exactly.
         budget: input.budget ?? Number.POSITIVE_INFINITY,
         budgetRemaining: input.budget ?? Number.POSITIVE_INFINITY,
+        // Per-run model override (generate-action `model` param). Parsed once;
+        // a malformed string degrades to undefined so the run falls back to the
+        // config/agent default rather than failing the start.
+        model: parseModelString(input.model),
       }
       yield* SynchronizedRef.update(inst.runs, (runs) => new Map(runs).set(id, active))
       yield* persistRun(db, active)
@@ -1167,14 +1186,18 @@ export const layer = Layer.effect(
                 const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
                 return yield* Effect.fail(new Error(`Agent "${agentInput.agent}" not found.${hint}`))
               }
-              // Universal workflow model: a step that doesn't request its own
-              // model uses the configured `dynamic_workflows.model` (if set)
-              // before falling back to the agent's own default. So one config
-              // setting steers every agent in every generated workflow.
+              // Model resolution, most-specific first:
+              //   1. the step's own `model` (agentInput.model),
+              //   2. the per-run override (`active.model`, from the generate
+              //      call's `model` param),
+              //   3. the global `dynamic_workflows.model` config,
+              //   4. the agent's own default.
+              // So one generate call can pin a whole workflow to a model
+              // (overriding config), while a single step can still opt out.
               const workflowModel = parseModelString((yield* config.get()).dynamic_workflows?.model)
               const modelInfo = agentInput.model
                 ? Provider.parseModel(agentInput.model)
-                : (workflowModel ?? selected.model)
+                : (active.model ?? workflowModel ?? selected.model)
               let parentPermission: PermissionV1.Ruleset = []
               if (active.run.session_id) {
                 const parentSession = yield* sessions

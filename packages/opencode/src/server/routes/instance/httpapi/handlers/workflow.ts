@@ -95,6 +95,11 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
           prompt,
           source: plan.source,
           temporary: true,
+          // Same override the planner used: steer the generated workflow's
+          // agents with the requested model, not just plan generation.
+          model: ctx.payload.model
+            ? `${ctx.payload.model.providerID}/${ctx.payload.model.modelID}`
+            : undefined,
         })
         .pipe(Effect.mapError(apiError))
     })
