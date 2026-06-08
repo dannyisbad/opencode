@@ -1158,6 +1158,70 @@ export async function run(args, ctx) {
     }),
   )
 
+  it.instance("adversarial coerces a non-array rubric instead of crashing on .map", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "adversarial-rubric",
+          `export const meta = { name: "adversarial-rubric", phases: ["run"] }
+export async function run(args, ctx) {
+  // A non-array, non-string rubric (the kind a generated workflow can emit) used
+  // to throw "rubric.map is not a function" and fail the whole run.
+  const result = await ctx.adversarial({
+    worker: async () => await ctx.agent({ prompt: "do worker task" }),
+    rubric: 5,
+  })
+  return { pass: result.verification.pass }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+        prompt: (input) =>
+          Effect.gen(function* () {
+            if (input.noReply) return assistantReply()
+            if (input.format) {
+              const structured = { pass: true, confidence: 0.9, issues: [], evidence: [] }
+              return {
+                info: {
+                  id: "msg_v",
+                  role: "assistant",
+                  providerID: "test",
+                  modelID: "test-model",
+                  cost: 0,
+                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                  structured,
+                },
+                parts: [{ type: "text", text: JSON.stringify(structured) }],
+              } as unknown as SessionV1.WithParts
+            }
+            return {
+              info: {
+                id: "msg_w",
+                role: "assistant",
+                providerID: "test",
+                modelID: "test-model",
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              },
+              parts: [{ type: "text", text: "worker output" }],
+            } as unknown as SessionV1.WithParts
+          }),
+        cancel: () => Effect.void,
+      }
+      const run = yield* workflow.start({ name: "adversarial-rubric", prompt: ops })
+      const done = yield* workflow.wait({ id: run.id })
+      // Before the fix this run FAILED ("rubric.map is not a function"); now it
+      // completes, the number rubric coerced to ["5"].
+      expect(done.run?.status).toBe("completed")
+      expect(done.run?.result).toEqual({ pass: true })
+    }),
+  )
+
   function errorPromptOps(errorName: string, errorMessage: string) {
     const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
       prompt: (input) =>

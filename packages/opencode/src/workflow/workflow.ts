@@ -800,7 +800,15 @@ function createContext(input: {
       if (workerResult && typeof workerResult === "object" && "prompt" in workerResult) {
         workerResult = await input.agent(workerResult as any)
       }
-      const rubric = typeof options.rubric === "string" ? [options.rubric] : options.rubric
+      // Coerce rubric to a string[] regardless of what a (possibly LLM-generated)
+      // workflow passes: an array is used as-is; null/undefined falls through to the
+      // default criteria below; anything else (a bare string, number, object) is
+      // wrapped via String() so `.map` can never throw "rubric.map is not a function".
+      const rubric = Array.isArray(options.rubric)
+        ? options.rubric
+        : options.rubric == null
+          ? undefined
+          : [String(options.rubric)]
       const criteria = rubric?.map((r) => `- ${r}`).join("\n") ?? "- Output is correct and complete"
       const verifyPrompt = [
         "You are an independent verifier. Judge the worker output against the criteria.",
@@ -824,7 +832,11 @@ function createContext(input: {
         required: ["pass", "confidence", "issues", "evidence"],
       }
       const verification = await input.agent({
-        agent: options.verifierAgent ?? "plan",
+        // Default the verifier to `general`, NOT `plan`: `plan` is interactive
+        // (requires user confirmation) and the planner explicitly forbids generated
+        // workflows from using it, so defaulting adversarial's verifier to it would
+        // stall a headless run. `general` is the right non-interactive default.
+        agent: options.verifierAgent ?? "general",
         model: options.verifierModel,
         prompt: verifyPrompt,
         schema,
