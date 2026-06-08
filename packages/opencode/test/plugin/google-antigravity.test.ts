@@ -94,6 +94,33 @@ describe("plugin.google-antigravity", () => {
       const contents = JSON.parse(translateRequest(url, body, "p")!.body).request.contents
       expect(contents[0].parts[0].functionCall.id).toBe("native-xyz")
     })
+
+    test("backfills input_schema for a no-arg tool whose Gemini parameters were dropped", () => {
+      // @ai-sdk/google omits `parameters` for a no-arg tool (e.g. plan_exit's
+      // Schema.Struct({})). The Code Assist backend turns functionDeclarations into
+      // Anthropic tools[].custom for Claude targets, where input_schema is required —
+      // so without this backfill opus 400s with "tools.N.custom.input_schema: Field
+      // required" just for declaring the tool. Assert the missing parameters are
+      // restored and a real schema is left untouched.
+      const url = "https://generativelanguage.googleapis.com/v1beta/models/claude-sonnet-4-6:generateContent"
+      const body = JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        tools: [
+          {
+            functionDeclarations: [
+              { name: "withParams", parameters: { type: "object", properties: { q: { type: "string" } } } },
+              { name: "noParams" }, // parameters dropped by @ai-sdk/google
+            ],
+          },
+        ],
+      })
+      const tools = JSON.parse(translateRequest(url, body, "p")!.body).request.tools
+      const [withParams, noParams] = tools[0].functionDeclarations
+      // real schema is preserved verbatim
+      expect(withParams.parameters).toEqual({ type: "object", properties: { q: { type: "string" } } })
+      // missing schema is backfilled with the canonical empty object schema
+      expect(noParams.parameters).toEqual({ type: "object", properties: {} })
+    })
   })
 
   describe("models.unwrapJson", () => {

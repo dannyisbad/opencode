@@ -215,6 +215,33 @@ function injectToolCallIds(request: { contents?: GeminiContent[] }): void {
   }
 }
 
+// @ai-sdk/google makes a Gemini functionDeclaration's `parameters` OPTIONAL and
+// DROPS it for a no-arg tool: convertJSONSchemaToOpenAPISchema returns undefined
+// for a root empty-object schema (Gemini rejects an empty `parameters`), so a
+// tool declared with no inputs (e.g. plan_exit's Schema.Struct({})) ships with no
+// `parameters` field. The Code Assist backend translates functionDeclarations to
+// Anthropic tools[].custom for Claude targets, where `input_schema` is REQUIRED,
+// so the request is rejected at validation ("tools.N.custom.input_schema: Field
+// required") on EVERY request that merely declares the tool — independent of
+// whether the model calls it. Backfill the canonical empty object schema so the
+// Anthropic translation yields a valid input_schema. Harmless for Gemini, which
+// accepts {type:"object",properties:{}} here. Same class of fix as injectToolCallIds.
+interface GeminiFunctionDeclaration {
+  parameters?: unknown
+}
+interface GeminiToolset {
+  functionDeclarations?: GeminiFunctionDeclaration[]
+}
+function injectToolSchemas(request: { tools?: GeminiToolset[] }): void {
+  for (const toolset of request.tools ?? []) {
+    for (const decl of toolset.functionDeclarations ?? []) {
+      if (decl.parameters == null) {
+        decl.parameters = { type: "object", properties: {} }
+      }
+    }
+  }
+}
+
 // Rewrite an @ai-sdk/google request into the cloudcode-pa v1internal envelope.
 // Returns the new URL + body, or null if the request isn't a generate call.
 export function translateRequest(
@@ -228,6 +255,7 @@ export function translateRequest(
   const streaming = method === "streamGenerateContent"
   const inner = bodyText ? JSON.parse(bodyText) : {}
   injectToolCallIds(inner)
+  injectToolSchemas(inner)
   const target = `${CLOUDCODE_BASE}/v1internal:${method}${streaming ? "?alt=sse" : ""}`
   return { url: target, body: JSON.stringify({ model, project, request: inner }), streaming }
 }
