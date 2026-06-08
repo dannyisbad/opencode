@@ -2,16 +2,19 @@ import { describe, test, expect } from "bun:test"
 import { isTransientError, modelChain, parseModelString } from "@/workflow/resilience"
 
 describe("workflow resilience", () => {
-  test("isTransientError: rate limits / overload / 5xx / structured-miss are transient", () => {
+  test("isTransientError: rate limits / overload / 5xx / timeout / quota are transient", () => {
     expect(isTransientError(new Error("Rate limit exceeded, please retry"))).toBe(true)
     expect(isTransientError(new Error("429 Too Many Requests"))).toBe(true)
     expect(isTransientError(new Error("The model is overloaded right now"))).toBe(true)
     expect(isTransientError(new Error("503 Service Unavailable"))).toBe(true)
-    expect(isTransientError(new Error("Agent was asked for structured output but produced none"))).toBe(true)
+    expect(isTransientError(new Error("request timed out"))).toBe(true)
     expect(isTransientError(new Error("quota exhausted for this project"))).toBe(true)
   })
 
-  test("isTransientError: genuine/non-transient errors are NOT retried on another model", () => {
+  test("isTransientError: genuine errors (incl. structured-miss) are NOT same-model-retried", () => {
+    // A structured-output miss is NOT a same-model transient — the same model+prompt
+    // reproduces it; that's a different-model fallback's job, not a retry.
+    expect(isTransientError(new Error("Agent was asked for structured output but produced none"))).toBe(false)
     expect(isTransientError(new Error("no valid plan after 3 attempts: duplicate step id"))).toBe(false)
     expect(isTransientError(new Error("401 Unauthorized"))).toBe(false)
     expect(isTransientError(new Error("bad request: missing required field"))).toBe(false)

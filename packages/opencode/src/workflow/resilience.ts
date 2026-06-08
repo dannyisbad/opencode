@@ -11,11 +11,13 @@ import type { ModelV2 } from "@opencode-ai/core/model"
 
 export type ModelDesc = { providerID: ProviderV2.ID; modelID: ModelV2.ID }
 
-// A transient failure is worth retrying on a DIFFERENT model: rate limits,
-// provider overload / 5xx, timeouts, capacity/quota exhaustion, and the
-// workflow's own structured-output miss (the model produced no valid object).
-// A non-transient error (malformed request, auth, a genuine logic bug) is NOT
-// transient — retrying it on another model just burns calls, so callers re-throw.
+// A transient failure is one that the SAME request, retried after a backoff,
+// can plausibly recover from: rate limits, provider overload / 5xx, timeouts,
+// capacity/quota exhaustion. A non-transient error (malformed request, auth,
+// agent-not-found, cancellation, budget, or a structured-output miss — which the
+// same model+prompt will just reproduce) is NOT retried. (A structured miss or a
+// persistently-down model is the job of a DIFFERENT-model fallback, not a
+// same-model retry.)
 export function isTransientError(error: unknown): boolean {
   if (error instanceof APICallError) {
     const s = error.statusCode
@@ -23,7 +25,7 @@ export function isTransientError(error: unknown): boolean {
     if (error.isRetryable) return true
   }
   const msg = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase()
-  return /rate.?limit|\b429\b|too many requests|overload|\b50[0-9]\b|timeout|timed out|unavailable|capacity|quota|exhaust|structured output/.test(
+  return /rate.?limit|\b429\b|too many requests|overload|\b50[0-9]\b|timeout|timed out|unavailable|capacity|quota|exhaust/.test(
     msg,
   )
 }

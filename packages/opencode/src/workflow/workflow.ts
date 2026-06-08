@@ -21,7 +21,7 @@ import { and, desc, eq, notInArray } from "drizzle-orm"
 import { APICallError } from "ai"
 import path from "path"
 import { pathToFileURL } from "url"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Scope, Schema, SynchronizedRef } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Schedule, Scope, Schema, SynchronizedRef } from "effect"
 import type {
   WorkflowContext,
   WorkflowParallelOptions,
@@ -32,7 +32,7 @@ import type {
 import { WorkflowRunTable } from "./workflow.sql"
 import { Meta } from "./meta"
 import { MetaReader } from "./meta-reader"
-import { parseModelString } from "./resilience"
+import { isTransientError, parseModelString } from "./resilience"
 
 // Branded id for a workflow run. Follows the repo's ID convention (cf. SessionID
 // / MessageID in `session/schema.ts`): a `job_`-prefixed string carrying a
@@ -1297,6 +1297,18 @@ export const layer = Layer.effect(
                 text: node.output,
               }
             }).pipe(
+              // Same-model resilience: opencode runs agent steps with maxRetries=0,
+              // so a transient failure (rate limit, provider overload, or a
+              // structured-output miss) would otherwise fail the step outright.
+              // Retry the whole step (fresh child session) a couple of times with
+              // exponential backoff while the failure looks transient; a genuine
+              // error (agent-not-found, cancellation, budget) does not match the
+              // predicate and propagates immediately. Cross-MODEL fallback is a
+              // separate layer; this is the cheap, type-preserving first one.
+              Effect.retry({
+                while: (error) => isTransientError(error),
+                schedule: Schedule.exponential("500 millis").pipe(Schedule.both(Schedule.recurs(2))),
+              }),
               Effect.ensuring(
                 Effect.sync(() => {
                   if (node.session_id) active.sessions.delete(node.session_id)
