@@ -1544,18 +1544,27 @@ const MIME_BADGE: Record<string, string> = {
 
 // A backgrounded workflow / subagent / terminal injects its completion as a
 // SYNTHETIC user text part wrapping the full model-facing XML (`<workflow_run>`,
-// `<task>`, `<terminal_run>`). That XML is excluded from `text()`, so the user
-// bubble renders nothing. Instead we detect it here and draw a single compact
-// `✳ <summary>` row (like `→ Read(file)`) — the agent still gets the full text,
-// the human just gets the one-line "completed" signal.
-function parseBackgroundCompletion(text: string): { state: "completed" | "error"; summary: string } | undefined {
+// `<task>`, `<terminal_run>`). That XML is for the agent; the human gets a single
+// compact Claude-Code-style line built HERE from the tag's structured attributes
+// (`label`/`exit`/`elapsed`), NOT the model-facing `<summary>` prose. Falls back
+// to the summary only when a producer didn't emit the structured attributes.
+function parseBackgroundCompletion(text: string): { state: "completed" | "error"; line: string } | undefined {
   const m = /^\s*<(?:workflow_run|task|terminal_run)\b[^>]*\bstate="(completed|error|failed)"/.exec(text)
   if (!m) return undefined
-  const sm = /<summary>([\s\S]*?)<\/summary>/.exec(text)
-  return {
-    state: m[1] === "completed" ? "completed" : "error",
-    summary: (sm?.[1] ?? `Background task ${m[1]}`).trim(),
+  const state: "completed" | "error" = m[1] === "completed" ? "completed" : "error"
+  const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(text)?.[1]
+  const label = attr("label")
+  const exit = attr("exit")
+  const elapsed = attr("elapsed")
+  if (label) {
+    const verb = state === "completed" ? "completed" : "failed"
+    const exitStr = exit !== undefined ? ` (exit ${exit})` : ""
+    const elapsedStr = elapsed ? ` · ${elapsed}` : ""
+    return { state, line: `${label}  ${verb}${exitStr}${elapsedStr}` }
   }
+  // Fallback for producers without structured attrs (e.g. legacy subagent tasks).
+  const sm = /<summary>([\s\S]*?)<\/summary>/.exec(text)
+  return { state, line: (sm?.[1] ?? `Background task ${m[1]}`).trim() }
 }
 
 function UserMessage(props: {
@@ -1612,7 +1621,7 @@ function UserMessage(props: {
             failed={completion().state === "error"}
             pending=""
           >
-            {completion().summary}
+            {completion().line}
           </InlineToolRow>
         )}
       </Show>
@@ -2019,6 +2028,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={props.part.tool === "task"}>
           <Task {...toolprops} />
         </Match>
+        <Match when={props.part.tool === "terminal"}>
+          <Terminal {...toolprops} />
+        </Match>
         <Match when={props.part.tool === "workflow"}>
           <WorkflowCall {...toolprops} />
         </Match>
@@ -2058,6 +2070,29 @@ function workflowMetadata(input?: Record<string, unknown>) {
     workflow: typeof input?.workflow === "string" ? input.workflow : undefined,
     background: input?.background === true,
   }
+}
+
+// Terminal tool: when a `run` was backgrounded (output is a `<terminal_run
+// state="running">` block), render a compact Claude-Code-style "● <label>
+// running in background" row instead of dumping the XML. Every other terminal
+// action (foreground run output, create/send/read/close) falls through to the
+// generic renderer.
+function Terminal(props: ToolProps<any>) {
+  const { theme } = useTheme()
+  const bg = createMemo(() => {
+    const out = props.output ?? ""
+    if (!/^\s*<terminal_run\b[^>]*\bstate="running"/.test(out)) return undefined
+    return { label: /\blabel="([^"]*)"/.exec(out)?.[1] ?? "command" }
+  })
+  return (
+    <Show when={bg()} fallback={<GenericTool {...props} />}>
+      {(info) => (
+        <InlineTool icon="●" color={theme.textMuted} complete={true} pending="" part={props.part}>
+          {info().label}  running in background
+        </InlineTool>
+      )}
+    </Show>
+  )
 }
 
 function GenericTool(props: ToolProps<any>) {

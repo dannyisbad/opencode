@@ -172,13 +172,15 @@ describe("terminal tool helpers", () => {
   })
 
   describe("renderTerminalBackground", () => {
-    test("running form carries the sessionId + read/send/close instructions", () => {
+    test("running form carries the sessionId, label, and read/send/close instructions", () => {
       const out = renderTerminalBackground({ sessionId: "pty_abc", state: "running", description: "start dev server" })
-      expect(out).toContain('<terminal_run id="pty_abc" state="running">')
+      expect(out).toContain('id="pty_abc"')
+      expect(out).toContain('state="running"')
+      expect(out).toContain('label="start dev server"')
       expect(out).toContain("Command running in background: start dev server")
       expect(out).toContain('action="read" with sessionId="pty_abc"')
     })
-    test("completed form embeds exit + duration in the summary and wraps output", () => {
+    test("completed form embeds structured attrs (label/exit/elapsed) for the TUI + summary + output", () => {
       const out = renderTerminalBackground({
         sessionId: "pty_abc",
         state: "completed",
@@ -188,6 +190,11 @@ describe("terminal tool helpers", () => {
         durationMs: 62_000,
       })
       expect(out).toContain('state="completed"')
+      // structured attrs the TUI parses for its compact line
+      expect(out).toContain('label="run tests"')
+      expect(out).toContain('exit="0"')
+      expect(out).toContain('elapsed="1m02s"')
+      // model-facing summary + output still present
       expect(out).toContain("Background command completed (exit 0) in 1m02s: run tests")
       expect(out).toContain("<terminal_result>\nall passed\n</terminal_result>")
     })

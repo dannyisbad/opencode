@@ -210,9 +210,16 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(total / 60)}m${String(total % 60).padStart(2, "0")}s`
 }
 
+// Strip characters that would break an XML attribute value so a description can
+// be embedded as `label="..."` for the TUI to render a clean compact line.
+function attrSafe(value: string): string {
+  return value.replace(/["'<>\n\r]/g, " ").replace(/\s+/g, " ").trim()
+}
+
 // Model-facing payload for a backgrounded terminal command. The `running` form is
 // returned immediately; the `completed`/`error` form is injected when the PTY
-// exits. The TUI renders the <summary> line as a compact one-line bubble.
+// exits. Structured attributes (label/exit/elapsed) let the TUI render its own
+// compact one-line bubble without echoing the model-facing <summary>.
 export function renderTerminalBackground(input: {
   sessionId: string
   state: "running" | "completed" | "error"
@@ -221,9 +228,10 @@ export function renderTerminalBackground(input: {
   text?: string
   durationMs?: number
 }): string {
+  const label = attrSafe(input.description)
   if (input.state === "running") {
     return [
-      `<terminal_run id="${input.sessionId}" state="running">`,
+      `<terminal_run id="${input.sessionId}" state="running" kind="terminal" label="${label}">`,
       `<summary>Command running in background: ${input.description}</summary>`,
       `<instructions>You will be notified when it exits. Use action="read" with sessionId="${input.sessionId}" to read output incrementally, action="send" to provide input, action="close" to terminate.</instructions>`,
       `</terminal_run>`,
@@ -232,8 +240,18 @@ export function renderTerminalBackground(input: {
   const exitStr = input.exit != null ? ` (exit ${input.exit})` : ""
   const elapsed = input.durationMs != null ? ` in ${formatElapsed(input.durationMs)}` : ""
   const tag = input.state === "error" ? "terminal_error" : "terminal_result"
+  const attrs = [
+    `id="${input.sessionId}"`,
+    `state="${input.state}"`,
+    `kind="terminal"`,
+    `label="${label}"`,
+    input.exit != null ? `exit="${input.exit}"` : "",
+    input.durationMs != null ? `elapsed="${formatElapsed(input.durationMs)}"` : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
   return [
-    `<terminal_run id="${input.sessionId}" state="${input.state}">`,
+    `<terminal_run ${attrs}>`,
     `<summary>Background command ${input.state}${exitStr}${elapsed}: ${input.description}</summary>`,
     `<${tag}>`,
     input.text ?? "",

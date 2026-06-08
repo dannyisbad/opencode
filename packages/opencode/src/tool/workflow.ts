@@ -252,13 +252,19 @@ function backgroundGenerateStarted(runId: string, workflow: string) {
 }
 
 // Compact, human-readable elapsed time for the completion summary ("12s",
-// "1m02s"). The TUI surfaces the <summary> line verbatim as a one-line bubble.
+// "1m02s").
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000))
   if (total < 60) return `${total}s`
   const m = Math.floor(total / 60)
   const s = total % 60
   return `${m}m${String(s).padStart(2, "0")}s`
+}
+
+// Strip characters that would break an XML attribute so the workflow name can be
+// embedded as `label="..."` for the TUI's compact completion line.
+function attrSafe(value: string): string {
+  return value.replace(/["'<>\n\r]/g, " ").replace(/\s+/g, " ").trim()
 }
 
 function backgroundJobMessage(
@@ -269,8 +275,9 @@ function backgroundJobMessage(
   durationMs?: number,
 ) {
   const elapsed = durationMs != null ? ` in ${formatElapsed(durationMs)}` : ""
+  const elapsedAttr = durationMs != null ? ` elapsed="${formatElapsed(durationMs)}"` : ""
   return [
-    `<workflow_run id="${runId}" state="${state}">`,
+    `<workflow_run id="${runId}" state="${state}" kind="workflow" label="${attrSafe(workflow)}"${elapsedAttr}>`,
     `<summary>Dynamic workflow ${state}: ${workflow}${elapsed}</summary>`,
     state === "completed" ? "<workflow_result>" : "<workflow_error>",
     text,
