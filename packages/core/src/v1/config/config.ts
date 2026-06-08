@@ -182,6 +182,14 @@ export const Info = Schema.Struct({
         description:
           "Ordered backup models (provider/model) tried when the primary model fails transiently (rate limit, overload, structured-output miss). The planner and every agent step walk this chain before failing.",
       }),
+      generator: Schema.optional(Schema.Literals(["code", "declarative", "auto"])).annotate({
+        description:
+          "Planner tier. 'code' = the LLM writes an executable run(args, ctx) module directly (more expressive, capable models); 'declarative' = the LLM emits a structured plan a deterministic compiler turns into a guaranteed-correct module (the safe floor for small models); 'auto' (default) routes by model capability and falls back to declarative on code-gen failure.",
+      }),
+      code_capable_models: Schema.optional(Schema.Array(Schema.String)).annotate({
+        description:
+          "Provider/model globs treated as code-tier-capable under generator:'auto' (e.g. ['anthropic/*','openai/gpt-5*','google/gemini-3*-pro']). Overrides the built-in capability list; a model that matches none routes to the declarative floor.",
+      }),
     }),
   ).annotate({ description: "Dynamic workflow generation configuration" }),
   experimental: Schema.optional(

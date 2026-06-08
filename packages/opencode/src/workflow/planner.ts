@@ -3,6 +3,10 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { Cause, Effect, Exit, Schema } from "effect"
 import * as Option from "effect/Option"
 import { Declarative } from "./declarative"
+import { codeWorkflowPlannerPrompt } from "./code-prompt"
+import { gateCodeSource } from "./code-gate"
+import { decideTier } from "./capability"
+import { MetaReader } from "./meta-reader"
 import { modelChain, parseModelString, type ModelDesc } from "./resilience"
 import { Provider } from "@/provider/provider"
 import { Config } from "@/config/config"
@@ -17,6 +21,19 @@ export const DynamicWorkflowPlan = Schema.Struct({
   source: Schema.String.annotate({ description: "Complete TypeScript source code" }),
 })
 export type DynamicWorkflowPlan = Schema.Schema.Type<typeof DynamicWorkflowPlan>
+
+// What the CODE tier asks the LLM to emit: a `reasoning` scratchpad first (so the
+// JSON constraint doesn't degrade thinking — same trick as the declarative plan),
+// then the workflow's display name/description and the complete module `source`.
+export const CodePlan = Schema.Struct({
+  reasoning: Schema.optional(Schema.String),
+  name: Schema.String,
+  description: Schema.optional(Schema.String),
+  source: Schema.String,
+})
+const codeDecode = Schema.decodeUnknownExit(CodePlan)
+const codeJsonSchema = Schema.toStandardJSONSchemaV1(CodePlan)
+const codeStandardSchema = Schema.toStandardSchemaV1(CodePlan)
 
 // The DECLARATIVE planner prompt. The model returns a structured plan (data, not
 // code); a deterministic compiler (declarative.ts) turns it into a correct
@@ -67,6 +84,9 @@ export const planDynamicWorkflow = Effect.fn("Workflow.planDynamic")(function* (
   model?: { providerID: ProviderV2.ID; modelID: ModelV2.ID }
   agent?: string
   variant?: string
+  // Per-call planner-tier override: "code" (LLM authors the module), "declarative"
+  // (compiler floor), or "auto" (route by model capability). Beats config.
+  generator?: "code" | "declarative" | "auto"
 }) {
   const providerOpt = yield* Effect.serviceOption(Provider.Service)
   const authOpt = yield* Effect.serviceOption(Auth.Service)
@@ -153,6 +173,101 @@ export const planDynamicWorkflow = Effect.fn("Workflow.planDynamic")(function* (
       }
       return yield* Effect.fail(new Error("no valid plan after 3 attempts: " + problems.join("; ")))
     })
+
+  // CODE tier: the LLM authors the executable `run(args, ctx)` module DIRECTLY
+  // (vs the declarative compiler emitting one). Same per-model generate harness as
+  // planWithModel, but generating the richer `CodePlan` and validating the emitted
+  // `source` through the STATIC GATE (gateCodeSource — literal meta, no imports/
+  // eval/fs, an exported run) instead of the declarative lint. Gate problems feed
+  // back into the same 3-attempt repair loop. On success the LLM-authored source is
+  // already the final module — NO Declarative.compile.
+  const codePrompt = codeWorkflowPlannerPrompt(input.objective)
+  const planWithModelCode = (m: ModelDesc) =>
+    Effect.gen(function* () {
+      const resolved = yield* provider.getModel(m.providerID, m.modelID)
+      const language = yield* provider.getLanguage(resolved)
+      const authInfo = yield* auth.get(m.providerID).pipe(Effect.orDie)
+      const isOpenaiOauth = m.providerID === "openai" && authInfo?.type === "oauth"
+
+      const generate = (promptText: string) =>
+        Effect.tryPromise({
+          try: async () => {
+            const params = {
+              experimental_telemetry: undefined,
+              temperature: 0.1,
+              messages: [{ role: "user" as const, content: promptText }],
+              model: language,
+              schema: Object.assign(codeStandardSchema, codeJsonSchema),
+            } satisfies Parameters<typeof generateObject>[0]
+            if (isOpenaiOauth) {
+              const result = streamObject({
+                ...params,
+                providerOptions: ProviderTransform.providerOptions(resolved, { instructions: promptText, store: false }),
+                onError: () => {},
+              })
+              for await (const part of result.fullStream) {
+                if (part.type === "error") throw part.error
+              }
+              return result.object
+            }
+            return generateObject(params).then((r) => r.object)
+          },
+          catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+        })
+
+      let problems: string[] = []
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const promptText =
+          attempt === 0
+            ? codePrompt
+            : [
+                codePrompt,
+                "",
+                "Your previous module was REJECTED. Fix EXACTLY these problems and return the corrected module:",
+                ...problems.map((p) => `- ${p}`),
+              ].join("\n")
+        const raw = yield* generate(promptText)
+        const decoded = codeDecode(raw, { errors: "all" })
+        if (Exit.isFailure(decoded)) {
+          problems = [Cause.pretty(decoded.cause)]
+          continue
+        }
+        const source = decoded.value.source
+        problems = gateCodeSource(source)
+        if (problems.length === 0) {
+          // `phases` come from the parsed literal `meta.phases` (the source of
+          // truth the run uses), so the progress UI matches the setPhase labels.
+          const meta = MetaReader.read(source, "<dynamic-code-workflow>.ts")
+          const phases = meta.valid ? (meta.meta.phases ?? []) : []
+          return {
+            name: decoded.value.name,
+            description: decoded.value.description,
+            phases,
+            source,
+          } satisfies DynamicWorkflowPlan
+        }
+      }
+      return yield* Effect.fail(new Error("no valid code module after 3 attempts: " + problems.join("; ")))
+    })
+
+  // Tier routing: per-call override > config flag > "auto" (route by the resolved
+  // primary model's capability). The CODE tier runs first when selected; if it
+  // exhausts the whole model chain, we FALL THROUGH to the declarative floor below
+  // — so a bad code module (or an un-capable model) is never fatal.
+  const tier = decideTier({
+    override: input.generator,
+    config: cfg.dynamic_workflows?.generator,
+    model: primary,
+    capableGlobs: cfg.dynamic_workflows?.code_capable_models,
+  })
+
+  if (tier === "code") {
+    for (const m of chain) {
+      const exit = yield* planWithModelCode(m).pipe(Effect.exit)
+      if (Exit.isSuccess(exit)) return exit.value
+    }
+    // Code tier exhausted the chain — fall through to the declarative floor.
+  }
 
   // Walk the chain: the first model to yield a valid plan wins; any failure
   // (rate limit, or a weaker model that can't satisfy the lint) advances to the

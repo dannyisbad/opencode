@@ -68,6 +68,10 @@ const Parameters = Schema.Struct({
     description:
       "Optional 'provider/model' override for action=generate (e.g. 'google/gemini-3.1-pro-preview'). Steers BOTH plan generation and every agent step of the generated workflow, taking precedence over the configured dynamic_workflows.model. Omit to use the configured/default model.",
   }),
+  generator: Schema.optional(Schema.Literals(["code", "declarative", "auto"])).annotate({
+    description:
+      "Optional planner-tier override for action=generate. 'code' = the model writes the workflow as executable code (more expressive); 'declarative' = a structured plan compiled to a guaranteed-correct workflow (safer floor); 'auto' (default) routes by model capability. Omit to use the configured default.",
+  }),
 })
 
 type Params = Schema.Schema.Type<typeof Parameters>
@@ -575,6 +579,29 @@ export const WorkflowTool = Tool.define(
             const workflowName = `dynamic-${runId.slice(0, 8)}`
             const filepath = path.join(dynamicDir, `${workflowName}.ts`)
 
+            // Stage-B gate: a code-tier module passes the planner's static gate
+            // (literal meta / no imports / has run) but may still not TYPECHECK.
+            // touchFile waits for LSP diagnostics, so once it returns we can read
+            // them: if the generated file has type errors, regenerate via the
+            // declarative floor (correct-by-construction) and rewrite. No-op when
+            // clean, when no TS LSP matches the .dynamic file, or when the
+            // declarative fallback itself fails — returns the source to run.
+            const typecheckGate = (file: string, source: string) =>
+              Effect.gen(function* () {
+                const block = LSP.Diagnostic.report(file, (yield* lsp.diagnostics())[FSUtil.normalizePath(file)] ?? [])
+                if (!block) return source
+                const declExit = yield* planDynamicWorkflow({
+                  objective: params.objective!,
+                  model: parseModelString(params.model),
+                  generator: "declarative",
+                }).pipe(Effect.exit)
+                if (Exit.isFailure(declExit)) return source
+                yield* fs.writeWithDirs(file, declExit.value.source)
+                yield* format.file(file).pipe(Effect.ignore)
+                yield* lsp.touchFile(file, "document")
+                return declExit.value.source
+              })
+
             yield* ctx.ask({
               permission: "workflow",
               patterns: ["generate"],
@@ -603,15 +630,17 @@ export const WorkflowTool = Tool.define(
                   const plan = yield* planDynamicWorkflow({
                     objective: params.objective!,
                     model: parseModelString(params.model),
+                    generator: params.generator,
                   })
                   workflowDisplayName = plan.name ?? workflowName
-                  const generatedSource = plan.source
+                  let generatedSource = plan.source
 
                   yield* fs.writeWithDirs(filepath, generatedSource)
                   yield* format.file(filepath).pipe(Effect.ignore)
                   yield* events.publish(FileSystem.Event.Edited, { file: filepath })
                   yield* events.publish(Watcher.Event.Updated, { file: filepath, event: "add" })
                   yield* lsp.touchFile(filepath, "document")
+                  generatedSource = yield* typecheckGate(filepath, generatedSource)
 
                   const run = yield* workflow
                     .start({
@@ -713,6 +742,7 @@ export const WorkflowTool = Tool.define(
             const planExit = yield* planDynamicWorkflow({
               objective: params.objective,
               model: parseModelString(params.model),
+              generator: params.generator,
             }).pipe(Effect.exit)
             if (Exit.isFailure(planExit)) {
               const squashed = Cause.squash(planExit.cause)
@@ -726,7 +756,7 @@ export const WorkflowTool = Tool.define(
                 ].join("\n"),
               }
             }
-            const generatedSource = planExit.value.source
+            let generatedSource = planExit.value.source
 
             // Write the generated workflow to a temporary file
             yield* fs.writeWithDirs(filepath, generatedSource)
@@ -734,6 +764,7 @@ export const WorkflowTool = Tool.define(
             yield* events.publish(FileSystem.Event.Edited, { file: filepath })
             yield* events.publish(Watcher.Event.Updated, { file: filepath, event: "add" })
             yield* lsp.touchFile(filepath, "document")
+            generatedSource = yield* typecheckGate(filepath, generatedSource)
 
             // Start the generated workflow
             const run = yield* workflow
