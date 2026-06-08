@@ -9,7 +9,7 @@ import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { createTwoFilesPatch } from "diff"
 import path from "path"
-import { Cause, Effect, Schema, Scope } from "effect"
+import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Tool from "./tool"
 import { trimDiff } from "./edit"
@@ -78,6 +78,7 @@ const DESCRIPTION = [
   "- inspect: inspect workflow history, logs, agents, a specific agent, result, or all details.",
   "- create: persist a .opencode/workflows/<name>.ts file FROM SOURCE THE USER SUPPLIED. Use ONLY for a workflow the user wrote (or asked you to save verbatim). Do NOT hand-author your own workflow source here to satisfy an objective — that bypasses the planner's correctness guarantees (fan-out isolation, the verify/adversarial kind, the lint/repair loop). Use generate instead.",
   "- generate (PREFER for any objective or task): turn a natural-language objective into a workflow. A deterministic planner + compiler builds a correct-by-construction multi-step workflow — minimal when the task is simple, with fan-out/synthesis/adversarial-verify only when the objective warrants it — and runs it. Whenever the user describes a TASK or OBJECTIVE, ALWAYS use generate; never write the workflow source yourself.",
+  "If a generate request fails (e.g. the model was rate-limited or could not produce a plan), report the failure to the user and ask whether to retry — failures are often transient. Do NOT fall back to completing the objective by hand or writing source/task files; that silently bypasses the workflow system.",
 ].join("\n")
 
 function promptOps(ctx: Tool.Context) {
@@ -657,10 +658,26 @@ export const WorkflowTool = Tool.define(
               }
             }
 
-            const plan = yield* planDynamicWorkflow({
-              objective: params.objective,
-            })
-            const generatedSource = plan.source
+            // Generation can fail (model rate-limited across the whole fallback
+            // chain, or no valid plan). Catch it and return an instruction rather
+            // than letting it die: a raw tool failure makes the agent silently
+            // hand-do the objective (writing source/task files into the repo),
+            // which bypasses the entire workflow system. Surface the failure
+            // instead so the agent reports it.
+            const planExit = yield* planDynamicWorkflow({ objective: params.objective }).pipe(Effect.exit)
+            if (Exit.isFailure(planExit)) {
+              const squashed = Cause.squash(planExit.cause)
+              const reason = squashed instanceof Error ? squashed.message : String(squashed)
+              return {
+                title: `Dynamic workflow generation failed: ${workflowName}`,
+                metadata: { runId, workflow: workflowName, background: false, jobId: "", timedOut: false },
+                output: [
+                  `<error>Dynamic workflow generation failed: ${reason}</error>`,
+                  "<instructions>Generation failed (commonly: the model was rate-limited across all fallback models, or could not produce a valid plan). Do NOT complete the objective by hand and do NOT write any workflow source, code, or task files yourself — doing so bypasses the workflow system. Tell the user generation failed and ask whether to retry (it is often transient) or proceed a different way.</instructions>",
+                ].join("\n"),
+              }
+            }
+            const generatedSource = planExit.value.source
 
             // Write the generated workflow to a temporary file
             yield* fs.writeWithDirs(filepath, generatedSource)
