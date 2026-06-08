@@ -32,6 +32,7 @@ import type {
 import { WorkflowRunTable } from "./workflow.sql"
 import { Meta } from "./meta"
 import { MetaReader } from "./meta-reader"
+import { parseModelString } from "./resilience"
 
 // Branded id for a workflow run. Follows the repo's ID convention (cf. SessionID
 // / MessageID in `session/schema.ts`): a `job_`-prefixed string carrying a
@@ -1166,7 +1167,14 @@ export const layer = Layer.effect(
                 const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
                 return yield* Effect.fail(new Error(`Agent "${agentInput.agent}" not found.${hint}`))
               }
-              const modelInfo = agentInput.model ? Provider.parseModel(agentInput.model) : selected.model
+              // Universal workflow model: a step that doesn't request its own
+              // model uses the configured `dynamic_workflows.model` (if set)
+              // before falling back to the agent's own default. So one config
+              // setting steers every agent in every generated workflow.
+              const workflowModel = parseModelString((yield* config.get()).dynamic_workflows?.model)
+              const modelInfo = agentInput.model
+                ? Provider.parseModel(agentInput.model)
+                : (workflowModel ?? selected.model)
               let parentPermission: PermissionV1.Ruleset = []
               if (active.run.session_id) {
                 const parentSession = yield* sessions
