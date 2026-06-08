@@ -25,7 +25,8 @@ const InspectView = Schema.Literals(["summary", "logs", "agents", "agent", "resu
 
 const Parameters = Schema.Struct({
   action: Action.annotate({
-    description: "Workflow operation to perform: read, start, wait, inspect, or create",
+    description:
+      "Workflow operation: read, start, wait, inspect, create, or generate. For a natural-language objective, use generate (the planner builds the workflow); reserve create for source the user supplied.",
   }),
   name: Schema.optional(Schema.String).annotate({
     description: "Workflow name for read/start/create. For create, this is the file name without extension.",
@@ -75,8 +76,8 @@ const DESCRIPTION = [
   "- start: start an existing workflow. Foreground waits for completion by default; background=true returns immediately and injects a completion message later.",
   "- wait: wait for a running workflow by run_id.",
   "- inspect: inspect workflow history, logs, agents, a specific agent, result, or all details.",
-  "- create: write a persistent .opencode/workflows/<name>.ts workflow file.",
-  "- generate: dynamically generate a workflow tailored to a specific objective. The planner creates a multi-step workflow with phases, parallel agents, and verification. Writes to a temporary workflow file and starts it immediately in the background by default.",
+  "- create: persist a .opencode/workflows/<name>.ts file FROM SOURCE THE USER SUPPLIED. Use ONLY for a workflow the user wrote (or asked you to save verbatim). Do NOT hand-author your own workflow source here to satisfy an objective — that bypasses the planner's correctness guarantees (fan-out isolation, the verify/adversarial kind, the lint/repair loop). Use generate instead.",
+  "- generate (PREFER for any objective or task): turn a natural-language objective into a workflow. A deterministic planner + compiler builds a correct-by-construction multi-step workflow — minimal when the task is simple, with fan-out/synthesis/adversarial-verify only when the objective warrants it — and runs it. Whenever the user describes a TASK or OBJECTIVE, ALWAYS use generate; never write the workflow source yourself.",
 ].join("\n")
 
 function promptOps(ctx: Tool.Context) {
