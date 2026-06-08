@@ -1449,14 +1449,15 @@ export function Session() {
                     </Switch>
                   )}
                 </For>
-                <Show when={workflowRun()}>
+                <Show when={workflowRun()?.status === "running" && workflowRun()}>
                   {(run) => (
                     <box paddingTop={1} paddingLeft={3}>
                       <text fg={theme.text}>
                         {workflowShortcut()}
                         <span style={{ fg: theme.textMuted }}>
                           {" "}
-                          open workflow details for {run().workflow} ({run().id.replace(/^job_/, "#")})
+                          open workflow details for {run().definition?.meta.name ?? run().workflow} (
+                          {run().id.replace(/^job_/, "#")})
                         </span>
                       </text>
                     </box>
@@ -1541,6 +1542,22 @@ const MIME_BADGE: Record<string, string> = {
   "application/x-directory": "dir",
 }
 
+// A backgrounded workflow / subagent / terminal injects its completion as a
+// SYNTHETIC user text part wrapping the full model-facing XML (`<workflow_run>`,
+// `<task>`, `<terminal_run>`). That XML is excluded from `text()`, so the user
+// bubble renders nothing. Instead we detect it here and draw a single compact
+// `✳ <summary>` row (like `→ Read(file)`) — the agent still gets the full text,
+// the human just gets the one-line "completed" signal.
+function parseBackgroundCompletion(text: string): { state: "completed" | "error"; summary: string } | undefined {
+  const m = /^\s*<(?:workflow_run|task|terminal_run)\b[^>]*\bstate="(completed|error|failed)"/.exec(text)
+  if (!m) return undefined
+  const sm = /<summary>([\s\S]*?)<\/summary>/.exec(text)
+  return {
+    state: m[1] === "completed" ? "completed" : "error",
+    summary: (sm?.[1] ?? `Background task ${m[1]}`).trim(),
+  }
+}
+
 function UserMessage(props: {
   message: UserMessage
   parts: Part[]
@@ -1572,8 +1589,33 @@ function UserMessage(props: {
 
   const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
 
+  const backgroundCompletion = createMemo(() => {
+    for (const p of props.parts) {
+      if (p.type === "text" && p.synthetic) {
+        const parsed = parseBackgroundCompletion(p.text)
+        if (parsed) return parsed
+      }
+    }
+    return undefined
+  })
+
   return (
     <>
+      <Show when={backgroundCompletion()}>
+        {(completion) => (
+          <InlineToolRow
+            id={props.message.id}
+            icon="✳"
+            color={theme.textMuted}
+            errorColor={theme.error}
+            complete={true}
+            failed={completion().state === "error"}
+            pending=""
+          >
+            {completion().summary}
+          </InlineToolRow>
+        )}
+      </Show>
       <Show when={text()}>
         <box
           id={props.message.id}

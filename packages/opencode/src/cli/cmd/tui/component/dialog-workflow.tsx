@@ -842,7 +842,10 @@ function DialogWorkflowRun(props: {
       <box height={2} flexShrink={0}>
         <text fg={theme.primary} attributes={TextAttributes.BOLD} wrapMode="none" overflow="hidden">
           {fitColumns(
-            workflow()?.meta.name ?? current().workflow,
+            // The run carries its own definition.meta.name (the planner's display
+            // name for dynamic workflows); the workflows list lookup misses for
+            // temporary dynamic runs and would show the raw "dynamic-job_xxx" id.
+            current().definition?.meta.name ?? workflow()?.meta.name ?? current().workflow,
             `${agentProgress(current())} · ${formatShortDuration(current())}`,
             headerWidth(),
           )}

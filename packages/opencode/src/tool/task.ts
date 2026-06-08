@@ -25,7 +25,9 @@ const id = "task"
 const BACKGROUND_DESCRIPTION = [
   "Background mode: background=true launches the subagent asynchronously and returns immediately.",
   "Foreground is the default; use it when you need the result before continuing.",
-  "Use background only for independent work that can run while you continue elsewhere.",
+  "PREFER background for work that will block for a long time, or when the user may want to keep talking to you while it runs — a long build/test/research pass, a broad multi-file sweep, anything you'd otherwise wait minutes on.",
+  "Foregrounding a long task locks up the conversation; backgrounding keeps you responsive and notifies you the moment it finishes.",
+  "Still use background only for INDEPENDENT work — don't background something whose result you need for your very next step.",
   "You will be notified automatically when it finishes.",
 ].join(" ")
 const BACKGROUND_STARTED = [
@@ -56,7 +58,8 @@ const BaseParameters = Schema.Struct(BaseParameterFields)
 export const Parameters = Schema.Struct({
   ...BaseParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
-    description: "Run the agent in the background. You will be notified when it completes.",
+    description:
+      "Run the agent in the background and return immediately. Prefer this for long-blocking or independent work, or when the user may want to keep talking to you while it runs. You will be notified when it completes.",
   }),
 })
 

@@ -7,9 +7,11 @@ import { Pty } from "@opencode-ai/core/pty"
 import { PtyID } from "@opencode-ai/core/pty/schema"
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
-import { Effect, Deferred, Stream, Schema } from "effect"
+import { Effect, Deferred, Stream, Schema, Scope } from "effect"
 import { EventV2 } from "@opencode-ai/core/event"
 import { InstanceState } from "@/effect/instance-state"
+import { BackgroundJob } from "@/background/job"
+import type { TaskPromptOps } from "./task"
 
 export const log = Log.create({ service: "terminal-tool" })
 
@@ -55,9 +57,16 @@ export function sentinelCommand(shellName: string): string {
 const RunAction = Schema.Struct({
   action: Schema.Literal("run"),
   command: Schema.String.annotate({ description: "The command to execute in a TTY-aware terminal session" }),
-  timeout: Schema.optional(Schema.Number).annotate({ description: "Optional timeout in milliseconds" }),
+  timeout: Schema.optional(Schema.Number).annotate({
+    description:
+      "How long (ms) to stay in the foreground before auto-backgrounding. The command is NOT killed at the timeout — it keeps running in the background and you are handed a sessionId. Defaults to 30000ms.",
+  }),
   workdir: Schema.optional(Schema.String).annotate({
     description: "The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.",
+  }),
+  background: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Run in the background and return immediately with a sessionId. Use for commands that block, run indefinitely, or wait for interactive input — dev servers, watchers, `npm run dev`, `tail -f`, REPLs, build/test watch loops. You will be notified when it exits; read incremental output with action=\"read\" on the returned sessionId, send input with action=\"send\", stop it with action=\"close\".",
   }),
   description: Schema.String.annotate({ description: "Clear, concise description of what this command does in 5-10 words" }),
 })
@@ -184,11 +193,53 @@ function createMockSocket(
 // ---------------------------------------------------------------------------
 
 const DEFAULT_TIMEOUT = 2 * 60 * 1000
+// A foreground `run` that is still alive after this long is auto-backgrounded
+// (promoted to a persistent session + BackgroundJob) rather than killed.
+const AUTO_BACKGROUND_MS = 30 * 1000
 const MAX_METADATA_LENGTH = 30_000
 
 function preview(text: string): string {
   if (text.length <= MAX_METADATA_LENGTH) return text
   return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
+}
+
+// Compact elapsed-time label for the completion summary ("12s", "1m02s").
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000))
+  if (total < 60) return `${total}s`
+  return `${Math.floor(total / 60)}m${String(total % 60).padStart(2, "0")}s`
+}
+
+// Model-facing payload for a backgrounded terminal command. The `running` form is
+// returned immediately; the `completed`/`error` form is injected when the PTY
+// exits. The TUI renders the <summary> line as a compact one-line bubble.
+export function renderTerminalBackground(input: {
+  sessionId: string
+  state: "running" | "completed" | "error"
+  description: string
+  exit?: number | null
+  text?: string
+  durationMs?: number
+}): string {
+  if (input.state === "running") {
+    return [
+      `<terminal_run id="${input.sessionId}" state="running">`,
+      `<summary>Command running in background: ${input.description}</summary>`,
+      `<instructions>You will be notified when it exits. Use action="read" with sessionId="${input.sessionId}" to read output incrementally, action="send" to provide input, action="close" to terminate.</instructions>`,
+      `</terminal_run>`,
+    ].join("\n")
+  }
+  const exitStr = input.exit != null ? ` (exit ${input.exit})` : ""
+  const elapsed = input.durationMs != null ? ` in ${formatElapsed(input.durationMs)}` : ""
+  const tag = input.state === "error" ? "terminal_error" : "terminal_result"
+  return [
+    `<terminal_run id="${input.sessionId}" state="${input.state}">`,
+    `<summary>Background command ${input.state}${exitStr}${elapsed}: ${input.description}</summary>`,
+    `<${tag}>`,
+    input.text ?? "",
+    `</${tag}>`,
+    `</terminal_run>`,
+  ].join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +253,10 @@ export const TerminalTool = Tool.define(
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
     const events = yield* EventV2.Service
+    const background = yield* BackgroundJob.Service
+    // Tool-instance scope: completion-notify fibers are forked here so they
+    // outlive the foreground `run` scope that promoted the command.
+    const toolScope = yield* Scope.Scope
 
     const shell = Shell.name(Shell.acceptable())
     log.info("terminal tool using shell", { shell })
@@ -214,7 +269,10 @@ export const TerminalTool = Tool.define(
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               for (const [id] of sessions) {
-                yield* pty.remove(id as PtyID).pipe(Effect.orDie)
+                // A backgrounded PTY self-removes on exit (pty.ts onExit), so by
+                // teardown some sessions may already be gone — swallow NotFound
+                // rather than orDie, which would crash the whole finalizer chain.
+                yield* pty.remove(id as PtyID).pipe(Effect.ignore)
               }
               sessions.clear()
             }),
@@ -277,7 +335,16 @@ export const TerminalTool = Tool.define(
                 env,
               })
 
-              yield* Effect.addFinalizer(() => pty.remove(info.id).pipe(Effect.orDie))
+              // `promoted` is flipped true when the run is backgrounded (explicit
+              // background:true or the 30s auto-background): the PTY is then owned
+              // by the BackgroundJob + sessionState, so the foreground scope must
+              // NOT kill it. Otherwise remove it — swallowing NotFound because the
+              // PTY self-removes on exit (a completed run reaches here after the
+              // PTY is already gone), which would otherwise orDie and crash.
+              let promoted = false
+              yield* Effect.addFinalizer(() =>
+                promoted ? Effect.void : pty.remove(info.id).pipe(Effect.ignore),
+              )
 
               yield* ctx.metadata({
                 metadata: {
@@ -321,21 +388,26 @@ export const TerminalTool = Tool.define(
               conn.onMessage(params.command + "\n")
               conn.onMessage(sentinel + "\n")
 
-              const exitDeferred = yield* Deferred.make<
-                { kind: "exit"; code: number } | { kind: "timeout" } | { kind: "abort" }
-              >()
+              const exitDeferred = yield* Deferred.make<{ kind: "exit"; code: number } | { kind: "abort" }>()
 
-              yield* Effect.forkScoped(
-                events.subscribe(Pty.Event.Exited).pipe(
+              // Exit subscriber forked into the TOOL-INIT scope (not the foreground
+              // run scope) + take(1): it survives promotion so a backgrounded job
+              // can await exitDeferred to learn when the PTY exits, and self-
+              // terminates after the single event. Both the foreground race and the
+              // background job read the same deferred — no second subscription, no
+              // race window between them.
+              yield* events
+                .subscribe(Pty.Event.Exited)
+                .pipe(
                   Stream.filter((evt) => evt.data.id === info.id),
+                  Stream.take(1),
                   Stream.runForEach((evt) =>
-                    Effect.sync(() =>
-                      Deferred.succeed(exitDeferred, { kind: "exit" as const, code: evt.data.exitCode }),
-                    ),
+                    Deferred.succeed(exitDeferred, { kind: "exit" as const, code: evt.data.exitCode }),
                   ),
-                ),
-              )
+                  Effect.forkIn(toolScope, { startImmediately: true }),
+                )
 
+              // Abort listener (foreground only): user Esc cancels the in-flight run.
               yield* Effect.forkScoped(
                 Effect.callback<void>((resume) => {
                   if (ctx.abort.aborted) {
@@ -350,25 +422,146 @@ export const TerminalTool = Tool.define(
                 ),
               )
 
-              yield* Effect.forkScoped(
-                Effect.sleep(`${timeout + 100} millis`).pipe(
-                  Effect.andThen(() => Deferred.succeed(exitDeferred, { kind: "timeout" as const })),
-                ),
-              )
+              // Auto-background timer: a command still alive after `timeout`
+              // (default 30s) is PROMOTED to the background instead of killed.
+              // Skipped when the caller asked for background up front.
+              const runInBackground = params.background === true
+              const promoteDeferred = yield* Deferred.make<void>()
+              if (!runInBackground) {
+                yield* Effect.forkScoped(
+                  Effect.sleep(`${timeout} millis`).pipe(
+                    Effect.andThen(() => Deferred.succeed(promoteDeferred, undefined)),
+                  ),
+                )
+              }
 
-              const result = yield* Deferred.await(exitDeferred)
+              const outcome = runInBackground
+                ? ("promote" as const)
+                : yield* Effect.raceFirst(
+                    Deferred.await(exitDeferred),
+                    Deferred.await(promoteDeferred).pipe(Effect.as("promote" as const)),
+                  )
 
+              if (outcome === "promote") {
+                // The PTY is now owned by the BackgroundJob + sessionState; the
+                // foreground finalizer must NOT kill it. Keep the connection OPEN
+                // (no onClose) so `buffer` keeps growing until the PTY exits.
+                promoted = true
+                const ops = ctx.extra?.promptOps as TaskPromptOps | undefined
+
+                const sessions = yield* InstanceState.get(sessionState)
+                if (sessions.size >= MAX_SESSIONS) {
+                  // Prefer evicting an already-exited session over a live one.
+                  const victim =
+                    [...sessions.entries()].find(([, s]) => s.exitCode !== null)?.[0] ??
+                    sessions.keys().next().value
+                  if (victim) {
+                    const v = sessions.get(victim)
+                    sessions.delete(victim)
+                    if (v) yield* pty.remove(v.ptyId).pipe(Effect.ignore)
+                  }
+                }
+                sessions.set(info.id, {
+                  ptyId: info.id,
+                  lastCursor: 0,
+                  description: params.description,
+                  shell,
+                  createdAt: Date.now(),
+                  exitCode: null,
+                  buffer,
+                })
+
+                // The job's run awaits the PTY exit (via the toolScope subscriber
+                // that resolves exitDeferred — it outlives this scope), stamps the
+                // exit code into the session, and returns the cleaned output.
+                yield* background.start({
+                  id: info.id,
+                  type: "terminal",
+                  title: params.description,
+                  metadata: { background: true, sessionId: info.id, description: params.description },
+                  onPromote: Effect.void,
+                  run: Deferred.await(exitDeferred).pipe(
+                    Effect.flatMap((r) =>
+                      Effect.gen(function* () {
+                        const code = r.kind === "exit" ? r.code : null
+                        const live = yield* InstanceState.get(sessionState)
+                        const s = live.get(info.id)
+                        if (s) s.exitCode = code
+                        const { output } = cleanOutput(buffer, params.command)
+                        return output || "(no output)"
+                      }),
+                    ),
+                  ),
+                })
+
+                // Inject a compact completion bubble when the job settles. Forked
+                // into toolScope so it survives this foreground turn.
+                if (ops) {
+                  const inject = ops
+                  yield* background
+                    .wait({ id: info.id })
+                    .pipe(
+                      Effect.flatMap((res) =>
+                        Effect.gen(function* () {
+                          const live = yield* InstanceState.get(sessionState)
+                          const code = live.get(info.id)?.exitCode ?? null
+                          const state: "completed" | "error" = code == null || code === 0 ? "completed" : "error"
+                          const durationMs =
+                            res.info?.completed_at != null && res.info?.started_at != null
+                              ? res.info.completed_at - res.info.started_at
+                              : undefined
+                          yield* inject
+                            .prompt({
+                              sessionID: ctx.sessionID,
+                              agent: ctx.agent,
+                              parts: [
+                                {
+                                  type: "text",
+                                  synthetic: true,
+                                  text: renderTerminalBackground({
+                                    sessionId: info.id,
+                                    state,
+                                    description: params.description,
+                                    exit: code,
+                                    text: res.info?.output ?? res.info?.error ?? "",
+                                    durationMs,
+                                  }),
+                                },
+                              ],
+                            })
+                            .pipe(Effect.ignore)
+                        }),
+                      ),
+                      Effect.forkIn(toolScope, { startImmediately: true }),
+                    )
+                }
+
+                return {
+                  title: params.description,
+                  metadata: {
+                    output: "(running in background)",
+                    exit: null,
+                    pty: true as const,
+                    description: params.description,
+                    truncated: false,
+                  },
+                  output: renderTerminalBackground({
+                    sessionId: info.id,
+                    state: "running",
+                    description: params.description,
+                  }),
+                }
+              }
+
+              // Foreground completion: the command exited or was aborted before the
+              // auto-background timer fired.
+              const result = outcome
               conn.onClose()
 
               const { output, exit } = cleanOutput(buffer, params.command)
               const exitCode = result.kind === "exit" ? result.code : null
 
               const meta: string[] = []
-              if (result.kind === "timeout") {
-                meta.push(
-                  `terminal tool terminated command after exceeding timeout ${timeout} ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,
-                )
-              }
               if (result.kind === "abort") {
                 meta.push("User aborted the command")
               }
@@ -431,13 +624,14 @@ export const TerminalTool = Tool.define(
 
             const sessions = yield* InstanceState.get(sessionState)
 
-            // FIFO eviction: if at max, remove oldest
+            // FIFO eviction: if at max, remove oldest. Swallow NotFound — an
+            // evicted session whose backgrounded PTY already exited is gone.
             if (sessions.size >= MAX_SESSIONS) {
               const oldest = sessions.keys().next().value
               if (oldest) {
                 const oldSession = sessions.get(oldest)!
                 sessions.delete(oldest)
-                yield* pty.remove(oldSession.ptyId).pipe(Effect.orDie)
+                yield* pty.remove(oldSession.ptyId).pipe(Effect.ignore)
               }
             }
 
@@ -638,7 +832,10 @@ export const TerminalTool = Tool.define(
               }
             }
 
-            yield* pty.remove(session.ptyId).pipe(Effect.orDie)
+            // Swallow NotFound: a backgrounded PTY self-removes on exit, so the
+            // agent may close a session whose PTY is already gone — that's a
+            // successful close, not a crash.
+            yield* pty.remove(session.ptyId).pipe(Effect.ignore)
             sessions.delete(params.sessionId)
 
             return {

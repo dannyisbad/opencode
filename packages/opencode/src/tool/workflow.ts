@@ -251,10 +251,27 @@ function backgroundGenerateStarted(runId: string, workflow: string) {
   ].join("\n")
 }
 
-function backgroundJobMessage(runId: string, workflow: string, state: "completed" | "error", text: string) {
+// Compact, human-readable elapsed time for the completion summary ("12s",
+// "1m02s"). The TUI surfaces the <summary> line verbatim as a one-line bubble.
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000))
+  if (total < 60) return `${total}s`
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}m${String(s).padStart(2, "0")}s`
+}
+
+function backgroundJobMessage(
+  runId: string,
+  workflow: string,
+  state: "completed" | "error",
+  text: string,
+  durationMs?: number,
+) {
+  const elapsed = durationMs != null ? ` in ${formatElapsed(durationMs)}` : ""
   return [
     `<workflow_run id="${runId}" state="${state}">`,
-    `<summary>Background workflow ${state}: ${workflow}</summary>`,
+    `<summary>Dynamic workflow ${state}: ${workflow}${elapsed}</summary>`,
     state === "completed" ? "<workflow_result>" : "<workflow_error>",
     text,
     state === "completed" ? "</workflow_result>" : "</workflow_error>",
@@ -559,6 +576,12 @@ export const WorkflowTool = Tool.define(
             })
 
             if (params.background !== false) {
+              // The job/file is named `dynamic-<runid>`, but the planner gives the
+              // workflow a real display name. Resolve it once planning completes so
+              // the completion/error bubbles read e.g. "Email Validation" instead of
+              // the opaque "dynamic-job_xxxx". Captured by the taps below.
+              let workflowDisplayName = workflowName
+              let workflowDurationMs: number | undefined
               const job = yield* background.start({
                 id: runId,
                 type: "workflow",
@@ -574,6 +597,7 @@ export const WorkflowTool = Tool.define(
                     objective: params.objective!,
                     model: parseModelString(params.model),
                   })
+                  workflowDisplayName = plan.name ?? workflowName
                   const generatedSource = plan.source
 
                   yield* fs.writeWithDirs(filepath, generatedSource)
@@ -596,6 +620,8 @@ export const WorkflowTool = Tool.define(
                     .pipe(Effect.mapError(workflowError))
 
                   const waited = yield* waitForWorkflow(workflow, run)
+                  workflowDurationMs =
+                    waited.run.completed_at != null ? waited.run.completed_at - waited.run.started_at : undefined
                   const error = runFailure(waited.run)
                   if (error) return yield* Effect.fail(error)
                   return terminalOutput(waited.run)
@@ -610,7 +636,13 @@ export const WorkflowTool = Tool.define(
                             {
                               type: "text",
                               synthetic: true,
-                              text: backgroundJobMessage(runId, workflowName, "completed", output),
+                              text: backgroundJobMessage(
+                                runId,
+                                workflowDisplayName,
+                                "completed",
+                                output,
+                                workflowDurationMs,
+                              ),
                             },
                           ],
                         }),
@@ -629,7 +661,7 @@ export const WorkflowTool = Tool.define(
                             {
                               type: "text",
                               synthetic: true,
-                              text: backgroundJobMessage(runId, workflowName, "error", Cause.pretty(cause)),
+                              text: backgroundJobMessage(runId, workflowDisplayName, "error", Cause.pretty(cause)),
                             },
                           ],
                         }),

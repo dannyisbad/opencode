@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
-import { sentinelCommand, filterEcho, extractExit, cleanOutput, TerminalTool, Parameters } from "../../src/tool/terminal"
+import {
+  sentinelCommand,
+  filterEcho,
+  extractExit,
+  cleanOutput,
+  formatElapsed,
+  renderTerminalBackground,
+  TerminalTool,
+  Parameters,
+} from "../../src/tool/terminal"
 import * as Tool from "../../src/tool/tool"
 import { Pty } from "@opencode-ai/core/pty"
 import { PtyID } from "@opencode-ai/core/pty/schema"
@@ -10,6 +19,7 @@ import * as Truncate from "../../src/tool/truncate"
 import { Agent } from "../../src/agent/agent"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { BackgroundJob } from "../../src/background/job"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -144,6 +154,56 @@ describe("terminal tool helpers", () => {
       expect(oldest).toBe("id-1")
     })
   })
+
+  describe("formatElapsed", () => {
+    test("sub-minute is whole seconds", () => {
+      expect(formatElapsed(0)).toBe("0s")
+      expect(formatElapsed(12_000)).toBe("12s")
+      expect(formatElapsed(12_400)).toBe("12s")
+      expect(formatElapsed(59_900)).toBe("1m00s")
+    })
+    test("minutes are zero-padded", () => {
+      expect(formatElapsed(62_000)).toBe("1m02s")
+      expect(formatElapsed(125_000)).toBe("2m05s")
+    })
+    test("never negative", () => {
+      expect(formatElapsed(-500)).toBe("0s")
+    })
+  })
+
+  describe("renderTerminalBackground", () => {
+    test("running form carries the sessionId + read/send/close instructions", () => {
+      const out = renderTerminalBackground({ sessionId: "pty_abc", state: "running", description: "start dev server" })
+      expect(out).toContain('<terminal_run id="pty_abc" state="running">')
+      expect(out).toContain("Command running in background: start dev server")
+      expect(out).toContain('action="read" with sessionId="pty_abc"')
+    })
+    test("completed form embeds exit + duration in the summary and wraps output", () => {
+      const out = renderTerminalBackground({
+        sessionId: "pty_abc",
+        state: "completed",
+        description: "run tests",
+        exit: 0,
+        text: "all passed",
+        durationMs: 62_000,
+      })
+      expect(out).toContain('state="completed"')
+      expect(out).toContain("Background command completed (exit 0) in 1m02s: run tests")
+      expect(out).toContain("<terminal_result>\nall passed\n</terminal_result>")
+    })
+    test("error form uses the error tag", () => {
+      const out = renderTerminalBackground({
+        sessionId: "pty_x",
+        state: "error",
+        description: "build",
+        exit: 1,
+        text: "boom",
+      })
+      expect(out).toContain('state="error"')
+      expect(out).toContain("Background command error (exit 1): build")
+      expect(out).toContain("<terminal_error>\nboom\n</terminal_error>")
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -157,13 +217,14 @@ const liveLayer = Layer.mergeAll(
   Truncate.defaultLayer,
   Agent.defaultLayer,
   CrossSpawnSpawner.defaultLayer,
+  BackgroundJob.defaultLayer,
 )
 
 const it = testEffect(liveLayer)
 
 const ctx = {
   sessionID: SessionID.make("ses_test"),
-  messageID: MessageID.make(""),
+  messageID: MessageID.make("msg_test"),
   callID: "",
   agent: "build",
   abort: AbortSignal.any([]),
@@ -206,6 +267,7 @@ describe("terminal tool integration", () => {
         expect(closed.output).toContain("closed")
       }),
     ),
+    20000,
   )
 
   it.live("close nonexistent session returns error", () =>

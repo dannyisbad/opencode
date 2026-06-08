@@ -12,16 +12,19 @@ Be aware: OS: ${os}, Shell: ${shell}
 This tool supports multiple actions via the `action` parameter:
 
 ### action="run" (default)
-One-shot command execution — identical to the original terminal tool. Creates a PTY, runs the command, waits for exit, then tears down the session.
+One-shot command execution. Creates a PTY, runs the command, waits for exit, then tears down the session.
+
+A command still running after the foreground window (default 30s) is NOT killed — it is automatically moved to the background and you are handed a `sessionId`. You can also set `background: true` to background it immediately. PREFER `background: true` for commands that block, run indefinitely, or wait for interactive input — dev servers, file watchers, `npm run dev`, `tail -f`, REPLs, build/test watch loops, long `ssh` sessions. When a command is backgrounded you are notified when it exits; meanwhile use `action="read"` with the returned `sessionId` to read output incrementally, `action="send"` to provide input, and `action="close"` to stop it.
 
 - `command` (required): The command to execute
-- `timeout` (optional): Timeout in milliseconds (default: 120000ms)
+- `background` (optional): Run in the background and return immediately with a sessionId. Default false (foreground, auto-backgrounds after the timeout window).
+- `timeout` (optional): Foreground window in milliseconds before auto-backgrounding (default: 30000ms). The command is NOT killed at the timeout — it keeps running in the background.
 - `workdir` (optional): Working directory (defaults to current directory)
 - `description` (required): Brief description of what the command does
 
-Example:
+Example (background a dev server):
 ```json
-{ "command": "ssh user@host", "description": "Connect to remote host" }
+{ "command": "npm run dev", "description": "Start dev server", "background": true }
 ```
 
 ### action="create"
@@ -91,12 +94,12 @@ Maximum concurrent sessions: 20. Oldest sessions are evicted automatically.
 - All commands run in the current working directory by default. Use the `workdir` parameter if you need to run a command in a different directory. AVOID using `cd <directory> && <command>` patterns - use `workdir` instead.
 - IMPORTANT: This tool is for commands that REQUIRE a TTY. For simple non-interactive commands (git, ls, npm, docker), prefer the `bash` tool instead — it is faster and more efficient for non-interactive operations.
 - The command argument is required for `action="run"`.
-- You can specify an optional timeout in milliseconds. If not specified, commands will time out after 120000ms (2 minutes).
+- `timeout` is the foreground window (default 30000ms) — a command still running at the timeout is auto-backgrounded, NOT killed. Set `background: true` to background immediately.
 - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
 - If the output exceeds ${maxLines} lines or ${maxBytes} bytes, it will be truncated and the full output will be written to a file.
 - The PTY echoes input, so you may see the command repeated in the output. This is normal and is automatically filtered.
 - stdout and stderr are combined in PTY output (no separate streams). This is inherent to the PTY model.
-- For interactive programs that wait for user input (like `sudo`), the tool will wait until the program exits or times out. If you need to provide input to an interactive program, use `action="create"` to start a session, then `action="send"` to provide input.
+- For interactive programs that wait for user input (like `sudo`), the command stays in the foreground until it exits or the timeout window elapses (then it auto-backgrounds). To interact with it, either pass `background: true` (or let it auto-background) and use `action="send"`/`action="read"` on the returned sessionId, or use `action="create"` up front for a dedicated interactive session.
 
 ## Exit Code Detection
 
