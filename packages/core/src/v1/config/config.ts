@@ -174,6 +174,14 @@ export const Info = Schema.Struct({
       require_approval: Schema.optional(Schema.Boolean).annotate({
         description: "Require user approval before generating and running dynamic workflows (default: true)",
       }),
+      model: Schema.optional(Schema.String).annotate({
+        description:
+          "Universal model (provider/model) for dynamic-workflow generation AND the workflow's agents. Falls back to the session/default model when unset. Overridden per-call by the generate action's `model` param.",
+      }),
+      fallback_models: Schema.optional(Schema.Array(Schema.String)).annotate({
+        description:
+          "Ordered backup models (provider/model) tried when the primary model fails transiently (rate limit, overload, structured-output miss). The planner and every agent step walk this chain before failing.",
+      }),
     }),
   ).annotate({ description: "Dynamic workflow generation configuration" }),
   experimental: Schema.optional(

@@ -3,6 +3,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { Cause, Effect, Exit, Schema } from "effect"
 import * as Option from "effect/Option"
 import { Declarative } from "./declarative"
+import { modelChain, parseModelString, type ModelDesc } from "./resilience"
 import { Provider } from "@/provider/provider"
 import { Config } from "@/config/config"
 import { Auth } from "@/auth"
@@ -79,76 +80,102 @@ export const planDynamicWorkflow = Effect.fn("Workflow.planDynamic")(function* (
   const auth = authOpt.value
   const config = configOpt.value
 
-  const model = input.model ?? (yield* provider.defaultModel())
-  const resolved = yield* provider.getModel(model.providerID, model.modelID)
-  const language = yield* provider.getLanguage(resolved)
-
-  const authInfo = yield* auth.get(model.providerID).pipe(Effect.orDie)
-  const isOpenaiOauth = model.providerID === "openai" && authInfo?.type === "oauth"
+  // Resolve the model chain: primary (caller param > config.model > provider
+  // default) followed by the configured fallbacks. A failure on one model —
+  // notably a RATE LIMIT, which previously made the planner give up entirely and
+  // the agent silently hand-do the task — advances to the next model instead of
+  // aborting generation.
+  const cfg = yield* config.get()
+  const primary: ModelDesc = input.model ?? parseModelString(cfg.dynamic_workflows?.model) ?? (yield* provider.defaultModel())
+  const chain = modelChain(primary, cfg.dynamic_workflows?.fallback_models)
 
   const basePrompt = declarativeWorkflowPlannerPrompt(input.objective)
 
-  // One generation attempt: ask the model for a declarative plan OBJECT (data,
-  // not code). Same OpenAI-oauth streaming vs. generateObject split as before.
-  const generate = (promptText: string) =>
-    Effect.promise(async () => {
-      const params = {
-        experimental_telemetry: undefined,
-        temperature: 0.1,
-        messages: [{ role: "user" as const, content: promptText }],
-        model: language,
-        schema: Object.assign(Declarative.standardSchema, Declarative.jsonSchema),
-      } satisfies Parameters<typeof generateObject>[0]
-      if (isOpenaiOauth) {
-        const result = streamObject({
-          ...params,
-          providerOptions: ProviderTransform.providerOptions(resolved, {
-            instructions: promptText,
-            store: false,
-          }),
-          onError: () => {},
+  // Run the full generate → validate (schema) → lint (per-kind/reference
+  // contract) → repair(3x) loop against ONE model. `lint` enforces what the flat
+  // schema cannot (unique ids, references resolve to earlier steps, per-kind
+  // required fields); the repair attempts feed prior problems back so the model
+  // converges. tryPromise so a provider rejection (e.g. a rate limit) surfaces as
+  // a catchable FAILURE — letting the outer chain advance — not an uncatchable
+  // defect. Fails if the model can't produce a valid plan in 3 attempts.
+  const planWithModel = (m: ModelDesc) =>
+    Effect.gen(function* () {
+      const resolved = yield* provider.getModel(m.providerID, m.modelID)
+      const language = yield* provider.getLanguage(resolved)
+      const authInfo = yield* auth.get(m.providerID).pipe(Effect.orDie)
+      const isOpenaiOauth = m.providerID === "openai" && authInfo?.type === "oauth"
+
+      const generate = (promptText: string) =>
+        Effect.tryPromise({
+          try: async () => {
+            const params = {
+              experimental_telemetry: undefined,
+              temperature: 0.1,
+              messages: [{ role: "user" as const, content: promptText }],
+              model: language,
+              schema: Object.assign(Declarative.standardSchema, Declarative.jsonSchema),
+            } satisfies Parameters<typeof generateObject>[0]
+            if (isOpenaiOauth) {
+              const result = streamObject({
+                ...params,
+                providerOptions: ProviderTransform.providerOptions(resolved, { instructions: promptText, store: false }),
+                onError: () => {},
+              })
+              for await (const part of result.fullStream) {
+                if (part.type === "error") throw part.error
+              }
+              return result.object
+            }
+            return generateObject(params).then((r) => r.object)
+          },
+          catch: (e) => (e instanceof Error ? e : new Error(String(e))),
         })
-        for await (const part of result.fullStream) {
-          if (part.type === "error") throw part.error
+
+      let problems: string[] = []
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const promptText =
+          attempt === 0
+            ? basePrompt
+            : [
+                basePrompt,
+                "",
+                "Your previous plan was REJECTED. Fix EXACTLY these problems and return the corrected plan:",
+                ...problems.map((p) => `- ${p}`),
+              ].join("\n")
+        const raw = yield* generate(promptText)
+        const decoded = Declarative.decode(raw, { errors: "all" })
+        if (Exit.isFailure(decoded)) {
+          problems = [Cause.pretty(decoded.cause)]
+          continue
         }
-        return result.object
+        problems = Declarative.lint(decoded.value)
+        if (problems.length === 0) return decoded.value
       }
-      return generateObject(params).then((r) => r.object)
+      return yield* Effect.fail(new Error("no valid plan after 3 attempts: " + problems.join("; ")))
     })
 
-  // Generate → validate (schema) → lint (per-kind/reference contract) → repair.
-  // generateObject enforces the JSON SHAPE; `lint` enforces what the flat schema
-  // cannot (unique ids, references resolve to earlier steps, per-kind required
-  // fields). Up to 3 attempts feed the prior problems back so the model — large
-  // or small — converges to a valid plan instead of shipping a broken workflow.
+  // Walk the chain: the first model to yield a valid plan wins; any failure
+  // (rate limit, or a weaker model that can't satisfy the lint) advances to the
+  // next model. The chain is short (primary + a couple fallbacks), so trying each
+  // is cheap insurance against a throttled or under-capable primary.
   let plan: Declarative.WorkflowPlan | undefined
-  let problems: string[] = []
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const promptText =
-      attempt === 0
-        ? basePrompt
-        : [
-            basePrompt,
-            "",
-            "Your previous plan was REJECTED. Fix EXACTLY these problems and return the corrected plan:",
-            ...problems.map((p) => `- ${p}`),
-          ].join("\n")
-    const raw = yield* generate(promptText)
-    const decoded = Declarative.decode(raw, { errors: "all" })
-    if (Exit.isFailure(decoded)) {
-      problems = [Cause.pretty(decoded.cause)]
-      continue
-    }
-    problems = Declarative.lint(decoded.value)
-    if (problems.length === 0) {
-      plan = decoded.value
+  let lastError: unknown
+  for (const m of chain) {
+    const exit = yield* planWithModel(m).pipe(Effect.exit)
+    if (Exit.isSuccess(exit)) {
+      plan = exit.value
       break
     }
+    lastError = Cause.squash(exit.cause)
   }
 
   if (!plan) {
     return yield* Effect.fail(
-      new Error("Planner could not produce a valid workflow plan after 3 attempts: " + problems.join("; ")),
+      new Error(
+        `Planner could not produce a valid workflow plan (tried ${chain
+          .map((m) => `${m.providerID}/${m.modelID}`)
+          .join(", ")}): ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+      ),
     )
   }
 
