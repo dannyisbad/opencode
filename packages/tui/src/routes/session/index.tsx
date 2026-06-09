@@ -232,6 +232,16 @@ export function Session() {
       ),
     ),
   )
+  // A blocking foreground bash call that can be backgrounded with Ctrl+B. Once
+  // promoted, the server replaces its output with a `state="running"` block and
+  // the part settles to completed, so this only matches while still blocking.
+  const runningBash = createMemo(() =>
+    messages().some((message) =>
+      (sync.data.part[message.id] ?? []).some(
+        (part) => part.type === "tool" && part.tool === "bash" && part.state.status === "running",
+      ),
+    ),
+  )
   const userMessageIDs = createMemo(
     () =>
       new Set(
@@ -1135,7 +1145,7 @@ export function Session() {
       value: "session.background",
       category: "Session",
       hidden: true,
-      enabled: foregroundTasks().length > 0,
+      enabled: foregroundTasks().length > 0 || runningBash(),
       run: () => {
         void sdk.client.experimental.session.background({
           sessionID: route.sessionID,
@@ -1274,7 +1284,7 @@ export function Session() {
 
   useBindings(() => ({
     mode: OPENCODE_BASE_MODE,
-    enabled: foregroundTasks().length > 0,
+    enabled: foregroundTasks().length > 0 || runningBash(),
     priority: 1,
     bindings: tuiConfig.keybinds.get("session.background"),
   }))
@@ -2419,6 +2429,15 @@ function Shell(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
+  // When a bash command is backgrounded, the tool returns a `<terminal_run
+  // state="running" kind="bash">` block as its OUTPUT (the completed part's
+  // state.output, = props.output) — same as the Terminal tool. Render the compact
+  // Claude-Code-style "▣ <label> · running in background" row instead of the XML.
+  const bg = createMemo(() => {
+    const out = props.output ?? ""
+    if (!/^\s*<terminal_run\b[^>]*\bstate="running"/.test(out)) return undefined
+    return { label: /\blabel="([^"]*)"/.exec(out)?.[1] ?? "command" }
+  })
   const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 10
@@ -2445,6 +2464,14 @@ function Shell(props: ToolProps) {
 
   return (
     <Switch>
+      <Match when={bg()}>
+        {(info) => (
+          <InlineTool icon="▣" iconColor={theme.textMuted} color={theme.text} complete={true} pending="" part={props.part}>
+            {info().label}
+            <span style={{ fg: theme.textMuted }}> · running in background</span>
+          </InlineTool>
+        )}
+      </Match>
       <Match when={stringValue(props.metadata.output) !== undefined}>
         <BlockTool
           title={title()}

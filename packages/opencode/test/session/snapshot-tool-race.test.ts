@@ -33,6 +33,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
+import * as ShellBackground from "@/tool/shell/background"
 import { Git } from "../../src/git"
 import { Command } from "../../src/command"
 import { Config } from "@/config/config"
@@ -130,6 +131,7 @@ function makeHttp() {
     mcp,
     FSUtil.defaultLayer,
     BackgroundJob.defaultLayer,
+    ShellBackground.defaultLayer,
     status,
     Database.defaultLayer,
     EventV2.defaultLayer,

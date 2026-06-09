@@ -12,6 +12,8 @@ import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixtur
 import type { Permission } from "../../src/permission"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
+import { BackgroundJob } from "@/background/job"
+import * as ShellBackground from "@/tool/shell/background"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -30,6 +32,8 @@ const shellLayer = Layer.mergeAll(
   Config.defaultLayer,
   Agent.defaultLayer,
   RuntimeFlags.defaultLayer,
+  BackgroundJob.defaultLayer,
+  ShellBackground.defaultLayer,
   testInstanceStoreLayer,
 )
 const it = testEffect(shellLayer)
@@ -65,6 +69,8 @@ const delayedPipeLayer = Layer.mergeAll(
   Config.defaultLayer,
   Agent.defaultLayer,
   RuntimeFlags.defaultLayer,
+  BackgroundJob.defaultLayer,
+  ShellBackground.defaultLayer,
   testInstanceStoreLayer,
 )
 const drainIt = testEffect(delayedPipeLayer)
@@ -1107,41 +1113,38 @@ describe("tool.shell abort", () => {
   )
 
   it.live(
-    "terminates command on timeout",
+    "auto-backgrounds a command that exceeds the foreground window",
     () =>
       runIn(
         projectRoot,
         Effect.gen(function* () {
+          // `timeout` is now the foreground window: the command is NOT killed,
+          // it is promoted to the background with a running bubble.
           const result = yield* run({
             command: `sleep 60`,
-            description: "Timeout test",
+            description: "Long sleep",
             timeout: 500,
           })
-          expect(result.output).toContain("shell tool terminated command after exceeding timeout")
-          expect(result.output).toContain("retry with a larger timeout value in milliseconds")
+          expect(result.output).toContain("running in background")
         }),
       ),
     15_000,
   )
 
   it.live(
-    "uses RuntimeFlags bashDefaultTimeoutMs when timeout is omitted",
+    "background:true returns immediately with a running bubble",
     () =>
       runIn(
         projectRoot,
         Effect.gen(function* () {
-          const tool = yield* initShell()
-          expect(tool.description).toContain("commands will time out after 500ms")
-          const result = yield* tool.execute(
-            {
-              command: `sleep 60`,
-              description: "Default timeout test",
-            },
-            ctx,
-          )
-          expect(result.output).toContain("exceeding timeout 500 ms")
+          const result = yield* run({
+            command: `sleep 60`,
+            description: "Background sleep",
+            background: true,
+          })
+          expect(result.output).toContain("running in background")
         }),
-      ).pipe(Effect.provide(RuntimeFlags.layer({ bashDefaultTimeoutMs: 500 }))),
+      ),
     15_000,
   )
 

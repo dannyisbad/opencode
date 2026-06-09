@@ -1,4 +1,4 @@
-import { Effect, Fiber, Stream } from "effect"
+import { Effect, Fiber, Stream, Deferred, Scope } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -21,11 +21,71 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { BackgroundJob } from "@/background/job"
+import * as ShellBackground from "./shell/background"
+import type { TaskPromptOps } from "./task"
 
 export { Parameters } from "./shell/prompt"
 
 const MAX_METADATA_LENGTH = 30_000
 const POST_EXIT_OUTPUT_IDLE_TIMEOUT = "500 millis"
+// Foreground window: a command still running this long is auto-promoted to the
+// background (handed a bg id) instead of blocking the turn — NOT killed.
+const AUTO_BACKGROUND_MS = 30 * 1000
+// Hard cap on a backgrounded command's total lifetime; killed if it exceeds this.
+const MAX_BACKGROUND_MS = 5 * 60 * 1000
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000))
+  if (total < 60) return `${total}s`
+  return `${Math.floor(total / 60)}m${String(total % 60).padStart(2, "0")}s`
+}
+
+function attrSafe(value: string): string {
+  return value.replace(/["'<>\n\r]/g, " ").replace(/\s+/g, " ").trim()
+}
+
+// Background-command payload. Reuses the `terminal_run` tag with kind="bash" so
+// the TUI's parseBackgroundCompletion + ▣ renderer handle it with no TUI change.
+function renderBashBackground(input: {
+  id: string
+  state: "running" | "completed" | "error"
+  description: string
+  exit?: number | null
+  text?: string
+  durationMs?: number
+}): string {
+  const label = attrSafe(input.description)
+  if (input.state === "running") {
+    return [
+      `<terminal_run id="${input.id}" state="running" kind="bash" label="${label}">`,
+      `<summary>Command running in background: ${input.description}</summary>`,
+      `<instructions>You will be notified when it exits. Use the bash_output tool with id="${input.id}" to read new output, and bash_kill with id="${input.id}" to stop it.</instructions>`,
+      `</terminal_run>`,
+    ].join("\n")
+  }
+  const exitStr = input.exit != null ? ` (exit ${input.exit})` : ""
+  const elapsed = input.durationMs != null ? ` in ${formatElapsed(input.durationMs)}` : ""
+  const tag = input.state === "error" ? "terminal_error" : "terminal_result"
+  const attrs = [
+    `id="${input.id}"`,
+    `state="${input.state}"`,
+    `kind="bash"`,
+    `label="${label}"`,
+    input.exit != null ? `exit="${input.exit}"` : "",
+    input.durationMs != null ? `elapsed="${formatElapsed(input.durationMs)}"` : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+  return [
+    `<terminal_run ${attrs}>`,
+    `<summary>Background command ${input.state}${exitStr}${elapsed}: ${input.description}</summary>`,
+    `<${tag}>`,
+    input.text ?? "",
+    `</${tag}>`,
+    `</terminal_run>`,
+  ].join("\n")
+}
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -351,6 +411,11 @@ export const ShellTool = Tool.define(
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
     const flags = yield* RuntimeFlags.Service
+    const background = yield* BackgroundJob.Service
+    const shellBg = yield* ShellBackground.Service
+    // Tool-instance scope: completion-notify fibers are forked here so they
+    // outlive the foreground execute() that promoted the command.
+    const toolScope = yield* Scope.Scope
     const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
 
     const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
@@ -432,16 +497,20 @@ export const ShellTool = Tool.define(
       }
     })
 
-    const run = Effect.fn("ShellTool.run")(function* (
+    // Worker: spawn + capture + race exit vs the 5m hard cap, stamp the
+    // result/exit into the background registry, return the cleaned output string
+    // (which becomes the BackgroundJob's `output`). Runs inside the job's scope,
+    // so it outlives the foreground turn once promoted.
+    const executeCommand = Effect.fn("ShellTool.executeCommand")(function* (
       input: {
         shell: string
         command: string
         cwd: string
         env: NodeJS.ProcessEnv
-        timeout: number
         description: string
       },
       ctx: Tool.Context,
+      id: string,
     ) {
       const limits = yield* trunc.limits()
       const keep = limits.maxBytes * 2
@@ -456,6 +525,21 @@ export const ShellTool = Tool.define(
       let cut = false
       let expired = false
       let aborted = false
+
+      // Register in the background registry up front so bash_output/bash_kill can
+      // reach this command the moment it is promoted. `snapshot` reads the live
+      // capture buffer; `kill` cancels the owning job (→ interrupts this worker).
+      yield* shellBg.register({
+        id,
+        command: input.command,
+        description: input.description,
+        snapshot: () => list.map((item) => item.text).join(""),
+        readCursor: 0,
+        exitCode: null,
+        status: "running",
+        startedAt: Date.now(),
+        kill: background.cancel(id).pipe(Effect.ignore),
+      })
 
       const markOutputProcessed = Effect.sync(() => {
         processing = false
@@ -552,25 +636,16 @@ export const ShellTool = Tool.define(
             }),
           )
 
-          const abort = Effect.callback<void>((resume) => {
-            if (ctx.abort.aborted) return resume(Effect.void)
-            const handler = () => resume(Effect.void)
-            ctx.abort.addEventListener("abort", handler, { once: true })
-            return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
-          })
-
-          const timeout = Effect.sleep(`${input.timeout + 100} millis`)
+          // No ctx.abort listener here: a backgrounded command must survive the
+          // turn ending. Foreground abort is handled by the run wrapper, which
+          // cancels the owning job → interrupts this worker → kills the process.
+          const timeout = Effect.sleep(`${MAX_BACKGROUND_MS} millis`)
 
           const exit = yield* Effect.raceAll([
             handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
-            abort.pipe(Effect.map(() => ({ kind: "abort" as const, code: null }))),
             timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null }))),
           ])
 
-          if (exit.kind === "abort") {
-            aborted = true
-            yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
-          }
           if (exit.kind === "timeout") {
             expired = true
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
@@ -596,7 +671,9 @@ export const ShellTool = Tool.define(
       const meta: string[] = []
       if (expired) {
         meta.push(
-          `shell tool terminated command after exceeding timeout ${input.timeout} ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,
+          `shell tool terminated the command after exceeding the ${Math.round(
+            MAX_BACKGROUND_MS / 1000,
+          )}s background limit.`,
         )
       }
       if (aborted) meta.push("User aborted the command")
@@ -617,16 +694,174 @@ export const ShellTool = Tool.define(
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
+
+      // Stamp the result into the registry (read by the foreground path for rich
+      // metadata, and by the completion-notify), and return the output string —
+      // which becomes the BackgroundJob's `output`.
+      const status: ShellBackground.Status = (code != null && code !== 0) || expired ? "error" : "completed"
+      yield* shellBg.setExit(id, code, status)
+      yield* shellBg.setResult(id, {
+        output,
+        exit: code,
+        truncated: cut,
+        ...(cut && file ? { outputPath: file } : {}),
+      })
+      return output
+    })
+
+    // Orchestrator: the command ALWAYS runs as a BackgroundJob (task.ts pattern,
+    // so no fragile mid-flight scope handoff). Foreground just races the job's
+    // completion vs promotion vs the 30s window vs abort.
+    const run = Effect.fn("ShellTool.run")(function* (
+      input: {
+        shell: string
+        command: string
+        cwd: string
+        env: NodeJS.ProcessEnv
+        foregroundWindow: number
+        background: boolean
+        description: string
+      },
+      ctx: Tool.Context,
+    ) {
+      const id = ctx.callID ?? `bash_${Date.now().toString(36)}`
+      const ops = ctx.extra?.promptOps as TaskPromptOps | undefined
+
+      function runningResult() {
+        // Metadata shape kept identical to the foreground return (the bgId lives
+        // in the running-bubble XML `id="…"`, so metadata needn't carry it).
+        return {
+          title: input.description,
+          metadata: {
+            output: "(running in background)",
+            exit: null as number | null,
+            description: input.description,
+            truncated: false,
+          },
+          output: renderBashBackground({ id, state: "running", description: input.description }),
+        }
+      }
+
+      // Inject the ▣ completion bubble when the job settles. Forked into toolScope
+      // so it survives this turn.
+      const notify = Effect.fn("ShellTool.notify")(function* () {
+        if (!ops) return
+        const inject = ops
+        yield* background
+          .wait({ id })
+          .pipe(
+            Effect.flatMap((res) =>
+              Effect.gen(function* () {
+                const entry = yield* shellBg.get(id)
+                const exit = entry?.exitCode ?? null
+                const state: "completed" | "error" =
+                  entry?.status === "error" || (exit != null && exit !== 0) ? "error" : "completed"
+                const durationMs =
+                  res.info?.completed_at != null && res.info?.started_at != null
+                    ? res.info.completed_at - res.info.started_at
+                    : undefined
+                yield* inject
+                  .prompt({
+                    sessionID: ctx.sessionID,
+                    agent: ctx.agent,
+                    parts: [
+                      {
+                        type: "text",
+                        synthetic: true,
+                        text:
+                          "\n" +
+                          renderBashBackground({
+                            id,
+                            state,
+                            description: input.description,
+                            exit,
+                            text: entry?.result?.output ?? res.info?.output ?? "",
+                            durationMs,
+                          }),
+                      },
+                    ],
+                  })
+                  .pipe(Effect.ignore)
+              }),
+            ),
+            Effect.forkIn(toolScope, { startImmediately: true }),
+          )
+      })
+
+      yield* background.start({
+        id,
+        type: "bash",
+        title: input.description,
+        // sessionId lets the Ctrl+B (session.background) handler find and promote
+        // this command, mirroring how task jobs are promoted by parentSessionId.
+        metadata: { description: input.description, sessionId: ctx.sessionID },
+        onPromote: Effect.void,
+        run: executeCommand(
+          { shell: input.shell, command: input.command, cwd: input.cwd, env: input.env, description: input.description },
+          ctx,
+          id,
+        ),
+      })
+
+      if (input.background) {
+        yield* notify()
+        return runningResult()
+      }
+
+      const abort = Effect.callback<void>((resume) => {
+        if (ctx.abort.aborted) {
+          resume(Effect.void)
+          return Effect.sync(() => {})
+        }
+        const handler = () => resume(Effect.void)
+        ctx.abort.addEventListener("abort", handler, { once: true })
+        return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
+      })
+
+      const outcome = yield* Effect.raceAll([
+        background.wait({ id }).pipe(Effect.map((w) => ({ kind: "done" as const, info: w.info }))),
+        background.waitForPromotion(id).pipe(Effect.map(() => ({ kind: "promoted" as const }))),
+        abort.pipe(Effect.map(() => ({ kind: "abort" as const }))),
+        Effect.sleep(`${input.foregroundWindow} millis`).pipe(Effect.map(() => ({ kind: "timer" as const }))),
+      ])
+
+      if (outcome.kind === "abort") {
+        // Snapshot the captured output BEFORE cancelling (cancel interrupts the
+        // worker before it can stamp result), so partial output is preserved.
+        const entry = yield* shellBg.get(id)
+        const captured = (entry?.snapshot() ?? "").trim()
+        yield* background.cancel(id).pipe(Effect.ignore)
+        return {
+          title: input.description,
+          metadata: {
+            output: preview(captured || "(no output)"),
+            exit: null as number | null,
+            description: input.description,
+            truncated: false,
+          },
+          output: (captured || "(no output)") + "\n\n<shell_metadata>\nUser aborted the command\n</shell_metadata>",
+        }
+      }
+
+      if (outcome.kind === "promoted" || outcome.kind === "timer") {
+        if (outcome.kind === "timer") yield* background.promote(id).pipe(Effect.ignore)
+        yield* notify()
+        return runningResult()
+      }
+
+      // Foreground completion: read the rich result the worker stamped.
+      const entry = yield* shellBg.get(id)
+      const result = entry?.result
       return {
         title: input.description,
         metadata: {
-          output: last || preview(output),
-          exit: code,
+          output: preview(result?.output ?? ""),
+          exit: result?.exit ?? null,
           description: input.description,
-          truncated: cut,
-          ...(cut && file ? { outputPath: file } : {}),
+          truncated: result?.truncated ?? false,
+          ...(result?.outputPath ? { outputPath: result.outputPath } : {}),
         },
-        output,
+        output: result?.output ?? outcome.info?.output ?? "(no output)",
       }
     })
 
@@ -651,7 +886,9 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              const timeout = params.timeout ?? defaultTimeoutMs
+              // `timeout` now means the FOREGROUND window before auto-promote
+              // (default 30s), NOT a kill deadline. The 5m hard cap lives in the worker.
+              const foregroundWindow = params.timeout ?? AUTO_BACKGROUND_MS
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {
@@ -670,7 +907,8 @@ export const ShellTool = Tool.define(
                   command: params.command,
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
-                  timeout,
+                  foregroundWindow,
+                  background: params.background === true,
                   description: params.description,
                 },
                 ctx,

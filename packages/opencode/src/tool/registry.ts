@@ -2,6 +2,8 @@ import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
+import { BashOutputTool } from "./bash-output"
+import { BashKillTool } from "./bash-kill"
 import { TerminalTool } from "./terminal"
 import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
@@ -52,6 +54,7 @@ import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { Reference } from "@/reference/reference"
 import { BackgroundJob } from "@/background/job"
+import * as ShellBackground from "./shell/background"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -105,6 +108,8 @@ export const layer = Layer.effect(
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
+    const bashOutput = yield* BashOutputTool
+    const bashKill = yield* BashKillTool
     const terminal = yield* TerminalTool
     const globtool = yield* GlobTool
     const writetool = yield* WriteTool
@@ -207,6 +212,8 @@ export const layer = Layer.effect(
         const tool = yield* Effect.all({
           invalid: Tool.init(invalid),
           shell: Tool.init(shell),
+          bash_output: Tool.init(bashOutput),
+          bash_kill: Tool.init(bashKill),
           terminal: Tool.init(terminal),
           read: Tool.init(read),
           glob: Tool.init(globtool),
@@ -369,6 +376,7 @@ export const defaultLayer = Layer.suspend(() =>
           Agent.defaultLayer,
           Session.defaultLayer,
           BackgroundJob.defaultLayer,
+          ShellBackground.defaultLayer,
           Provider.defaultLayer,
           Reference.defaultLayer,
           LSP.defaultLayer,

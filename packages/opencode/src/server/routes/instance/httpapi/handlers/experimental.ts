@@ -154,14 +154,17 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
     const sessionBackground = Effect.fn("ExperimentalHttpApi.sessionBackground")(function* (ctx: {
       params: { sessionID: SessionID }
     }) {
-      if (!flags.experimentalBackgroundSubagents) return false
-      const jobs = (yield* background.list()).filter(
-        (job) =>
+      const jobs = (yield* background.list()).filter((job) => {
+        if (job.status !== "running" || job.metadata?.background === true) return false
+        // Force-background a running foreground bash command for this session.
+        if (job.type === "bash" && job.metadata?.sessionId === ctx.params.sessionID) return true
+        // Force-background synchronous subagents (experimental, flag-gated).
+        return (
+          flags.experimentalBackgroundSubagents &&
           job.type === "task" &&
-          job.status === "running" &&
-          job.metadata?.parentSessionId === ctx.params.sessionID &&
-          job.metadata.background !== true,
-      )
+          job.metadata?.parentSessionId === ctx.params.sessionID
+        )
+      })
       const promoted = yield* Effect.forEach(jobs, (job) => background.promote(job.id), { concurrency: "unbounded" })
       return promoted.some((job) => job !== undefined)
     })

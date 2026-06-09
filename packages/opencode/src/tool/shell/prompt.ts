@@ -22,7 +22,14 @@ export type Limits = {
 export function parameterSchema(description: string) {
   return Schema.Struct({
     command: Schema.String.annotate({ description: "The command to execute" }),
-    timeout: Schema.optional(PositiveInt).annotate({ description: "Optional timeout in milliseconds" }),
+    background: Schema.optional(Schema.Boolean).annotate({
+      description:
+        "Run in the background and return immediately with a background id. Prefer this for commands that block or run for a long time — dev servers, watchers, long builds/tests, anything you'd otherwise wait minutes on. You are notified automatically when it finishes; read incremental output with the bash_output tool (passing the id) and stop it with bash_kill.",
+    }),
+    timeout: Schema.optional(PositiveInt).annotate({
+      description:
+        "How long (ms) to stay in the foreground before auto-backgrounding. The command is NOT killed at this point — it keeps running in the background and you are handed a background id. Defaults to 30000ms.",
+    }),
     workdir: Schema.optional(Schema.String).annotate({
       description: `The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.`,
     }),

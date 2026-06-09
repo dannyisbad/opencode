@@ -17,6 +17,7 @@ import { Todo } from "@/session/todo"
 import { Skill } from "@/skill"
 import { Agent } from "@/agent/agent"
 import { BackgroundJob } from "@/background/job"
+import * as ShellBackground from "@/tool/shell/background"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { Provider } from "@/provider/provider"
@@ -66,6 +67,7 @@ const registryLayer = (opts: RegistryLayerOptions = {}) =>
           Session.defaultLayer,
           SessionStatus.defaultLayer,
           BackgroundJob.defaultLayer,
+          ShellBackground.defaultLayer,
           Provider.defaultLayer,
           Git.defaultLayer,
           RepositoryCache.defaultLayer,
