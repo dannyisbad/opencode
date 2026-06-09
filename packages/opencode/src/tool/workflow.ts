@@ -30,7 +30,7 @@ const InspectView = Schema.Literals(["summary", "logs", "agents", "agent", "resu
 const Parameters = Schema.Struct({
   action: Action.annotate({
     description:
-      "Workflow operation: read, start, wait, inspect, create, or generate. For a natural-language objective, use generate (the planner builds the workflow); reserve create for source the user supplied.",
+      "Workflow operation: run, read, start, wait, inspect, create, or generate. PREFER run — author the workflow script yourself and pass it as `script`. Reserve generate for when a separate planner model should author it, and create for source the user supplied.",
   }),
   name: Schema.optional(Schema.String).annotate({
     description: "Workflow name for read/start/create. For create, this is the file name without extension.",
@@ -329,6 +329,16 @@ function runFailure(run: Workflow.Run) {
   if (run.status === "cancelled") return new Error(`Workflow cancelled: ${run.id}`)
 }
 
+// A failed run's FULL diagnostics — the summary (with <error>), every log line,
+// and per-agent errors — so a background failure bubble carries everything the
+// engine recorded. A bare `run.error` one-liner ("Workflow failed: job_x") gives
+// the agent and the user nothing to act on.
+function runFailureDetailed(run: Workflow.Run) {
+  const error = runFailure(run)
+  if (!error) return undefined
+  return new Error([error.message, "", terminalOutput(run)].join("\n"))
+}
+
 function waitForWorkflow(workflow: Workflow.Interface, run: Workflow.Run, timeout?: number) {
   return workflow
     .wait({ id: run.id, timeout })
@@ -424,7 +434,7 @@ function startWorkflow(input: {
         },
         run: waitForWorkflow(input.workflow, run).pipe(
           Effect.flatMap((waited) => {
-            const error = runFailure(waited.run)
+            const error = runFailureDetailed(waited.run)
             return error ? Effect.fail(error) : Effect.succeed(terminalOutput(waited.run))
           }),
           Effect.tap((output) =>
@@ -727,7 +737,7 @@ export const WorkflowTool = Tool.define(
                     const waited = yield* waitForWorkflow(workflow, run)
                     workflowDurationMs =
                       waited.run.completed_at != null ? waited.run.completed_at - waited.run.started_at : undefined
-                    const error = runFailure(waited.run)
+                    const error = runFailureDetailed(waited.run)
                     if (error) return yield* Effect.fail(error)
                     return terminalOutput(waited.run)
                   }),
@@ -920,7 +930,7 @@ export const WorkflowTool = Tool.define(
                     const waited = yield* waitForWorkflow(workflow, run)
                     workflowDurationMs =
                       waited.run.completed_at != null ? waited.run.completed_at - waited.run.started_at : undefined
-                    const error = runFailure(waited.run)
+                    const error = runFailureDetailed(waited.run)
                     if (error) return yield* Effect.fail(error)
                     return terminalOutput(waited.run)
                   }),

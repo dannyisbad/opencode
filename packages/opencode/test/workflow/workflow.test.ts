@@ -19,14 +19,16 @@ const it = testEffect(Layer.mergeAll(Workflow.defaultLayer, Database.defaultLaye
 const HELLO_FIXTURE = "hello"
 
 // Seeds a workflow_run row in status="running" with NO live registry entry,
-// the exact shape an orphaned (crashed/restarted) run leaves behind.
-function seedRunningRow(id: string) {
+// the exact shape an orphaned (crashed/restarted) run leaves behind. `directory`
+// scopes the row to a project: omitted = legacy pre-migration row (NULL).
+function seedRunningRow(id: string, directory?: string) {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
     yield* db
       .insert(WorkflowRunTable)
       .values({
         id,
+        directory,
         workflow: HELLO_FIXTURE,
         status: "running",
         started_at: Date.now(),
@@ -778,6 +780,48 @@ return { sum: xs.reduce((a, b) => a + b, 0), arg: args.value }
       const row = yield* fetchRunRow(orphanId)
       expect(row.status).toBe("interrupted")
       expect(row.completed_at).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("runs() and the sweep are scoped to this project's directory", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          HELLO_FIXTURE,
+          `export const meta = { name: "Hello" }
+export async function run(args, ctx) { return "ok" }
+`,
+        ),
+      )
+      const workflow = yield* Workflow.Service
+
+      // A row owned by ANOTHER project sharing the same DB: it must neither show
+      // up in this project's history nor be touched by this project's sweep —
+      // it may belong to a LIVE fiber in a different process.
+      const foreignId = "job_foreign_project"
+      yield* seedRunningRow(foreignId, "C:\\somewhere\\else")
+      // A legacy pre-migration row (NULL directory): healed by the sweep once.
+      const legacyId = "job_legacy_null_dir"
+      yield* seedRunningRow(legacyId)
+
+      const run = yield* workflow.start({ name: HELLO_FIXTURE, args: {} })
+      yield* workflow.wait({ id: run.id })
+
+      // This project's run row carries the project root.
+      const ownRow = yield* fetchRunRow(run.id)
+      expect(ownRow.directory).toBeTruthy()
+
+      const listed = yield* workflow.runs()
+      const ids = listed.map((item) => item.id)
+      expect(ids).toContain(run.id)
+      expect(ids).not.toContain(foreignId)
+
+      yield* workflow.sweep()
+      // Foreign live row untouched; legacy row honestly interrupted.
+      expect((yield* fetchRunRow(foreignId)).status).toBe("running")
+      expect((yield* fetchRunRow(legacyId)).status).toBe("interrupted")
     }),
   )
 

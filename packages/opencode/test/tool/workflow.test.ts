@@ -14,8 +14,12 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import type { SessionPrompt } from "@/session/prompt"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { PartID } from "@/session/schema"
+import { Session } from "@/session/session"
 
-const it = testEffect(Layer.mergeAll(ToolRegistry.defaultLayer, CrossSpawnSpawner.defaultLayer))
+// Session.defaultLayer is merged so the bubble-diagnostics test can create a
+// REAL session for the injection path to resolve (layer memoization shares the
+// instance with the registry's own Session).
+const it = testEffect(Layer.mergeAll(ToolRegistry.defaultLayer, CrossSpawnSpawner.defaultLayer, Session.defaultLayer))
 
 const baseCtx: Omit<Tool.Context, "ask"> = {
   sessionID: SessionID.make("ses_test"),
@@ -347,6 +351,68 @@ return 1
         expect(result.output.toLowerCase()).toContain("import")
         // The gate runs before the permission ask and before anything is written.
         expect(recorder.requests.length).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("run: a failed background run injects a bubble with FULL diagnostics (logs + error)", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => enableDynamicWorkflows(dir))
+        const tool = yield* workflowTool()
+        const recorder = requestRecorder()
+        // The bubble injection resolves the calling session first — use a real one.
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "bubble-test" })
+        const ctx: Tool.Context = { ...recorder.ctx, sessionID: session.id }
+        const script = `export const meta = { name: "Doomed" } as const
+log("breadcrumb-evidence-123")
+throw new Error("boom-456")
+`
+        const started = yield* tool.execute({ action: "run", script, background: true }, ctx)
+        const runId = started.metadata.runId as string
+        yield* tool.execute({ action: "wait", run_id: runId, timeout: 10_000 }, ctx)
+
+        // The completion bubble is forked; give it a beat to land.
+        const bubble = yield* Effect.gen(function* () {
+          for (let i = 0; i < 40; i++) {
+            const part = recorder.prompts
+              .flatMap((p) => p.parts ?? [])
+              .find((part) => part.type === "text" && part.text.includes("state=\"error\""))
+            if (part) return part as { type: "text"; text: string }
+            yield* Effect.sleep("50 millis")
+          }
+          return yield* Effect.fail(new Error("error bubble was never injected"))
+        })
+
+        // Not a bare "Workflow failed: job_x" one-liner: the thrown error AND the
+        // run's logs are in the bubble, so the agent can actually fix the script.
+        expect(bubble.text).toContain("boom-456")
+        expect(bubble.text).toContain("breadcrumb-evidence-123")
+      }),
+    ),
+  )
+
+  it.live("run: the temporary .dynamic file is deleted after a foreground run finishes", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => enableDynamicWorkflows(dir))
+        const tool = yield* workflowTool()
+        const recorder = requestRecorder()
+        const script = `export const meta = { name: "Tidy" } as const
+return "done"
+`
+        const result = yield* tool.execute({ action: "run", script, background: false }, recorder.ctx)
+        expect(result.output).toContain('state="completed"')
+
+        const dynamicDir = path.join(dir, ".opencode", "workflows", ".dynamic")
+        const leftovers = yield* Effect.promise(() =>
+          fs.readdir(dynamicDir).then(
+            (files) => files.filter((f) => f.endsWith(".ts")),
+            () => [] as string[],
+          ),
+        )
+        expect(leftovers).toEqual([])
       }),
     ),
   )

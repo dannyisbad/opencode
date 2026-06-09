@@ -72,6 +72,11 @@ export const WorkflowRunTable = sqliteTable(
   {
     id: text().primaryKey(),
     session_id: text(),
+    // Project root the run belongs to. The DB is shared across every project a
+    // binary touches, so without this every dashboard listed every project's
+    // runs and one project's startup orphan-sweep clobbered another's LIVE runs.
+    // Null only on legacy pre-migration rows.
+    directory: text(),
     workflow: text().notNull(),
     status: text().$type<"running" | "completed" | "failed" | "cancelled" | "interrupted">().notNull(),
     started_at: integer().notNull(),
@@ -88,5 +93,6 @@ export const WorkflowRunTable = sqliteTable(
   (table) => [
     index("workflow_run_started_at_idx").on(table.started_at),
     index("workflow_run_status_started_at_idx").on(table.status, table.started_at),
+    index("workflow_run_directory_started_at_idx").on(table.directory, table.started_at),
   ],
 )

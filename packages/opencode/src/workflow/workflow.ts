@@ -17,7 +17,7 @@ import type {
   WorkflowLogRow,
 } from "@opencode-ai/core/workflow/sql"
 import { Glob } from "@opencode-ai/core/util/glob"
-import { and, desc, eq, notInArray } from "drizzle-orm"
+import { and, desc, eq, isNull, notInArray, or } from "drizzle-orm"
 import { APICallError } from "ai"
 import path from "path"
 import { pathToFileURL } from "url"
@@ -377,6 +377,12 @@ type Active = {
   run: Run
   done: Deferred.Deferred<Run>
   fiber?: Fiber.Fiber<void, unknown>
+  /**
+   * Project root this run belongs to. Persisted on the row so the shared DB can
+   * be scoped per project: `runs()` lists only this project's history and the
+   * orphan sweep never touches another project's live runs.
+   */
+  directory: string
   /** Child agent sessions currently in flight; aborted on cancel/remove. */
   sessions: Set<string>
   /** Session-abort vector for this run (the prompt-ops `cancel`); undefined when no prompt-ops were supplied. */
@@ -475,6 +481,7 @@ function persistRun(db: Database.Interface["db"], active: Active) {
     const data = {
       id: active.run.id,
       session_id: active.run.session_id ?? null,
+      directory: active.directory,
       workflow: active.run.workflow,
       status: active.run.status,
       started_at: active.run.started_at,
@@ -516,14 +523,20 @@ function persistInScope(
  * with a completion timestamp in a single bulk UPDATE. Used by the startup sweep
  * (liveIds empty) and the exposed `sweep()` method (liveIds = currently active
  * runs); genuinely-running rows owned by a live fiber are left untouched.
+ *
+ * Scoped to THIS project's rows (plus legacy rows with no directory, which get
+ * healed once): the DB is shared across projects, so an unscoped sweep from a
+ * fresh instance in project B used to mark project A's genuinely-live runs as
+ * interrupted.
  */
-function sweepOrphans(db: Database.Interface["db"], liveIds: ReadonlySet<string>, now: number) {
+function sweepOrphans(db: Database.Interface["db"], liveIds: ReadonlySet<string>, now: number, directory: string) {
   return db
     .update(WorkflowRunTable)
     .set({ status: "interrupted", completed_at: now, time_updated: now })
     .where(
       and(
         eq(WorkflowRunTable.status, "running"),
+        or(eq(WorkflowRunTable.directory, directory), isNull(WorkflowRunTable.directory)),
         liveIds.size ? notInArray(WorkflowRunTable.id, [...liveIds]) : undefined,
       ),
     )
@@ -706,8 +719,12 @@ function coerceArgs(
   return result
 }
 
+function projectRoot(ctx: { directory: string; worktree: string }) {
+  return ctx.worktree === "/" ? ctx.directory : ctx.worktree
+}
+
 function projectConfigDir(ctx: { directory: string; worktree: string }) {
-  return path.join(ctx.worktree === "/" ? ctx.directory : ctx.worktree, ".opencode")
+  return path.join(projectRoot(ctx), ".opencode")
 }
 
 function createContext(input: {
@@ -989,12 +1006,14 @@ export const layer = Layer.effect(
     const sessions = yield* Session.Service
     const { db } = yield* Database.Service
     const state = yield* InstanceState.make<State>(
-      Effect.fn("Workflow.state")(function* () {
+      Effect.fn("Workflow.state")(function* (ictx) {
         const runs = yield* SynchronizedRef.make(new Map<string, Active>())
-        // The registry is freshly empty here: any row still marked `running`
-        // belongs to a fiber that did not survive into this process, so sweep
-        // every one of them to `interrupted` (honest orphan recovery on start).
-        yield* sweepOrphans(db, new Set(), yield* Clock.currentTimeMillis)
+        // The registry is freshly empty here: any of THIS project's rows still
+        // marked `running` belongs to a fiber that did not survive into this
+        // process, so sweep them to `interrupted` (honest orphan recovery on
+        // start). Scoped to the project: another project's instance may be live
+        // in a different process sharing this DB, and its running rows are real.
+        yield* sweepOrphans(db, new Set(), yield* Clock.currentTimeMillis, projectRoot(ictx))
         return {
           runs,
           scope: yield* Scope.Scope,
@@ -1004,7 +1023,17 @@ export const layer = Layer.effect(
 
     const readRuns = Effect.fn("Workflow.readRuns")(function* () {
       const active = yield* SynchronizedRef.get((yield* InstanceState.get(state)).runs)
-      const rows = yield* db.select().from(WorkflowRunTable).orderBy(desc(WorkflowRunTable.started_at)).all().pipe(Effect.orDie)
+      // Scoped to this project: the DB is shared across every project this
+      // binary touches, and an unscoped list leaked every project's runs into
+      // every dashboard. Legacy pre-migration rows (NULL directory) are hidden
+      // rather than shown everywhere.
+      const rows = yield* db
+        .select()
+        .from(WorkflowRunTable)
+        .where(eq(WorkflowRunTable.directory, projectRoot(yield* InstanceState.context)))
+        .orderBy(desc(WorkflowRunTable.started_at))
+        .all()
+        .pipe(Effect.orDie)
       return rows
         .map(fromRow)
         .map((run) => {
@@ -1096,6 +1125,24 @@ export const layer = Layer.effect(
         }
       }
       yield* persistRun(db, active)
+      // A temporary (dynamic) workflow file is single-use: the module was loaded
+      // at start() and the source survives on the persisted row
+      // (definition.source), so at terminal the on-disk `.dynamic/` file is dead
+      // weight. Deleting it HERE — the one terminal choke point — covers every
+      // entry path (tool foreground/background, HTTP generate) instead of each
+      // caller remembering to clean up. Before the Deferred so waiters observing
+      // the terminal state never see the stale file.
+      if (active.run.definition?.temporary && active.run.definition.path) {
+        const file = active.run.definition.path
+        yield* Effect.promise(() =>
+          Bun.file(file)
+            .delete()
+            .then(
+              () => undefined,
+              () => undefined,
+            ),
+        )
+      }
       yield* Deferred.succeed(active.done, snapshot(active)).pipe(Effect.ignore)
       return snapshot(active)
     })
@@ -1147,6 +1194,7 @@ export const layer = Layer.effect(
           agents: [],
         },
         done,
+        directory: projectRoot(yield* InstanceState.context),
         sessions: new Set<string>(),
         cancelSession: input.prompt?.cancel,
         // Unset budget ⇒ Infinity ⇒ the gate never trips and the decrement is a
@@ -1451,7 +1499,7 @@ export const layer = Layer.effect(
       // `interrupted` and report that honestly instead of a misleading timeout.
       // Pass the live registry keys so genuinely-running siblings are untouched.
       if (!active) {
-        yield* sweepOrphans(db, new Set(live.keys()), yield* Clock.currentTimeMillis)
+        yield* sweepOrphans(db, new Set(live.keys()), yield* Clock.currentTimeMillis, projectRoot(yield* InstanceState.context))
         return { run: yield* get(input.id), timedOut: false }
       }
       if (input.timeout === undefined) return { run: yield* Deferred.await(active.done), timedOut: false }
@@ -1515,7 +1563,7 @@ export const layer = Layer.effect(
 
     const sweep: Interface["sweep"] = Effect.fn("Workflow.sweep")(function* () {
       const live = yield* SynchronizedRef.get((yield* InstanceState.get(state)).runs)
-      yield* sweepOrphans(db, new Set(live.keys()), yield* Clock.currentTimeMillis)
+      yield* sweepOrphans(db, new Set(live.keys()), yield* Clock.currentTimeMillis, projectRoot(yield* InstanceState.context))
     })
 
     return Service.of({ list, runs, get, start, wait, cancel, remove, sweep })

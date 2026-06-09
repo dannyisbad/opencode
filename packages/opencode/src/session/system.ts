@@ -106,8 +106,10 @@ export const layer = Layer.effect(
             : undefined,
           dynamicWorkflowsEnabled && !disabled.has("workflow")
             ? [
-                "Dynamic workflows are enabled and highly preferred. If the user mentions 'ultracode', 'workflow', or 'workflows', or asks to use a workflow, DO NOT load or use the workflow tool for static/regular/legacy workflows unless the user explicitly says to use STATIC or LEGACY workflows with those exact words. It should ALWAYS only load/use dynamic workflows (via workflow tool with action='generate') unless explicitly told to use static or legacy workflows.",
-                "Dynamic workflows can use: parallel fan-out, synthesis, adversarial verification, iterative loops, and batch processing. They are generated on-the-fly and run through the native workflow engine with full observability.",
+                "Dynamic workflows are enabled and highly preferred. If the user mentions 'ultracode', 'workflow', or 'workflows', or asks to use a workflow, use dynamic workflows — never static/regular/legacy ones unless the user explicitly says STATIC or LEGACY with those exact words.",
+                "AUTHOR THE WORKFLOW YOURSELF: write the orchestration script inline and run it via the workflow tool with action='run' (the tool description documents the script shape and global hooks). This is the preferred path — you are the author. Use action='generate' (a separate planner model authors it) ONLY as a fallback if your own script fails the gate repeatedly or you cannot author one.",
+                "If your script fails — gate rejection or a runtime error — read the error, fix the script, and run it again, like debugging your own code.",
+                "Dynamic workflows can use: parallel fan-out, pipelines, synthesis, adversarial verification, iterative loops, and batch processing. They run through the native workflow engine with full observability (watch live with /workflows).",
               ].join("\n")
             : undefined,
         ]
