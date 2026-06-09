@@ -73,7 +73,7 @@ const SendAction = Schema.Struct({
   action: Schema.Literal("send"),
   sessionId: Schema.String,
   input: Schema.String.annotate({
-    description: "Text to send to the terminal. Use \\x03 for Ctrl+C, \\x04 for Ctrl+D. Commands are appended with \\n",
+    description: "Text to send to the terminal. Use \\x03 for Ctrl+C, \\x04 for Ctrl+D. Commands are submitted automatically (Enter is appended).",
   }),
   description: Schema.String.annotate({ description: "Clear, concise description of what this input does in 5-10 words" }),
 })
@@ -316,8 +316,12 @@ export const TerminalTool = Tool.define(
               }
 
               const sentinel = sentinelCommand(shell)
-              conn.onMessage(params.command + "\n")
-              conn.onMessage(sentinel + "\n")
+              // Submit with \r (Enter). In a PTY, Enter is a carriage return;
+              // PowerShell's PSReadLine treats a bare \n as a multi-line
+              // continuation, so the command never runs. \r also works on
+              // bash/zsh via the pty line discipline.
+              conn.onMessage(params.command + "\r")
+              conn.onMessage(sentinel + "\r")
 
               const exitDeferred = yield* Deferred.make<
                 { kind: "exit"; code: number } | { kind: "timeout" } | { kind: "abort" }
@@ -529,8 +533,11 @@ export const TerminalTool = Tool.define(
               metadata: {},
             })
 
-            // Send input to PTY — append \n for commands (unless it's a control sequence)
-            const data = /^\x03|\x04|\x1a|\x1c$/.test(params.input) ? params.input : params.input + "\n"
+            // Send input to PTY — append \r (Enter) for commands, unless it's a
+            // control sequence. \r (carriage return) is what a real Enter sends;
+            // PowerShell's PSReadLine only accepts \r, treating a bare \n as a
+            // multi-line continuation that never executes.
+            const data = /^\x03|\x04|\x1a|\x1c$/.test(params.input) ? params.input : params.input + "\r"
             yield* pty.write(session.ptyId, data)
 
             return {
