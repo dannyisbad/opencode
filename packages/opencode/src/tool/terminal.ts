@@ -405,8 +405,10 @@ export const TerminalTool = Tool.define(
               }
 
               const sentinel = sentinelCommand(shell)
-              conn.onMessage(params.command + "\n")
-              conn.onMessage(sentinel + "\n")
+              // \r (Enter), not \n — see the send-action note below: PowerShell
+              // PSReadLine only executes on carriage return.
+              conn.onMessage(params.command + "\r")
+              conn.onMessage(sentinel + "\r")
 
               const exitDeferred = yield* Deferred.make<{ kind: "exit"; code: number } | { kind: "abort" }>()
 
@@ -760,7 +762,13 @@ export const TerminalTool = Tool.define(
             })
 
             // Send input to PTY — append \n for commands (unless it's a control sequence)
-            const data = /^\x03|\x04|\x1a|\x1c$/.test(params.input) ? params.input : params.input + "\n"
+            // Submit with a carriage return (\r), NOT a line feed (\n). In a PTY,
+            // Enter is \r — PowerShell's PSReadLine treats \n as a multi-line
+            // continuation (the command never runs and the session tangles), while
+            // \r is "accept line". bash/zsh accept \r too via the pty line
+            // discipline, so \r is correct on every shell. Control sequences
+            // (Ctrl+C \x03 etc.) are passed through untouched.
+            const data = /^\x03|\x04|\x1a|\x1c$/.test(params.input) ? params.input : params.input + "\r"
             yield* pty.write(session.ptyId, data).pipe(
               Effect.catchTag("Pty.NotFoundError", () => Effect.void),
             )
