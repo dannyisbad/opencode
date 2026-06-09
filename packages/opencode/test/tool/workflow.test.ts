@@ -38,6 +38,11 @@ async function writeWorkflow(dir: string, name: string, source: string) {
   await Bun.write(path.join(workflows, `${name}.ts`), source)
 }
 
+// action=run is gated behind dynamic_workflows.enabled (same gate as generate).
+async function enableDynamicWorkflows(dir: string) {
+  await Bun.write(path.join(dir, "opencode.json"), JSON.stringify({ dynamic_workflows: { enabled: true } }))
+}
+
 function requestRecorder() {
   const requests: Parameters<Tool.Context["ask"]>[0][] = []
   const prompts: SessionPrompt.PromptInput[] = []
@@ -295,6 +300,76 @@ export async function run() { await new Promise(() => {}) }
         expect(waited.metadata.timedOut).toBe(true)
         expect(waited.output).toContain('state="running"')
         expect(waited.output).toContain("still running")
+      }),
+    ),
+  )
+
+  it.live("run: executes an authored free-body script and returns the result", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => enableDynamicWorkflows(dir))
+        const tool = yield* workflowTool()
+        const recorder = requestRecorder()
+        // A free-body (Claude-style) script with pure-compute hooks — no agents,
+        // so it completes without a real model. background:false makes the tool
+        // wait and return the terminal result.
+        const script = `export const meta = { name: "RunDemo", phases: ["go"] } as const
+phase("go")
+const xs = (await parallel([() => Promise.resolve(1), () => Promise.resolve(2)])).filter(Boolean)
+log("got " + xs.length)
+return { sum: xs.reduce((a, b) => a + b, 0) }
+`
+        const result = yield* tool.execute({ action: "run", script, background: false }, recorder.ctx)
+
+        expect(recorder.requests.length).toBe(1)
+        expect(recorder.requests[0].permission).toBe("workflow")
+        expect(recorder.requests[0].patterns).toEqual(["run"])
+        expect(result.output).toContain('state="completed"')
+        expect(result.output).toContain('"sum": 3')
+      }),
+    ),
+  )
+
+  it.live("run: rejects a script that fails the static gate, before asking or starting", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => enableDynamicWorkflows(dir))
+        const tool = yield* workflowTool()
+        const recorder = requestRecorder()
+        const script = `import { z } from "zod"
+export const meta = { name: "Bad" } as const
+return 1
+`
+        const result = yield* tool.execute({ action: "run", script }, recorder.ctx)
+
+        expect(String(result.title).toLowerCase()).toContain("rejected")
+        expect(result.output.toLowerCase()).toContain("static gate")
+        expect(result.output.toLowerCase()).toContain("import")
+        // The gate runs before the permission ask and before anything is written.
+        expect(recorder.requests.length).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("run: background returns a run id that wait can resolve", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => enableDynamicWorkflows(dir))
+        const tool = yield* workflowTool()
+        const recorder = requestRecorder()
+        const script = `export const meta = { name: "BgRun" } as const
+return { ok: true }
+`
+        const started = yield* tool.execute({ action: "run", script, background: true }, recorder.ctx)
+        expect(started.output).toContain('state="running"')
+        const runId = started.metadata.runId as string
+        expect(runId).toBeTruthy()
+
+        // The id handed back is the workflow RUN id (not the opaque job id), so the
+        // agent can wait/inspect what it just started.
+        const waited = yield* tool.execute({ action: "wait", run_id: runId, timeout: 10_000 }, recorder.ctx)
+        expect(waited.metadata.timedOut).toBe(false)
+        expect(waited.output).toContain('state="completed"')
       }),
     ),
   )

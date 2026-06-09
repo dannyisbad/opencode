@@ -32,6 +32,7 @@ import type {
 import { WorkflowRunTable } from "./workflow.sql"
 import { Meta } from "./meta"
 import { MetaReader } from "./meta-reader"
+import { CodeTransform } from "./code-transform"
 import { isTransientError, parseModelString, type ModelDesc } from "./resilience"
 
 // Branded id for a workflow run. Follows the repo's ID convention (cf. SessionID
@@ -192,6 +193,12 @@ export type StartOptions = StartInput & {
   temporary?: boolean
   permissionSessionID?: SessionID
   /**
+   * Pre-minted run id. When a caller starts the run inside a background job it
+   * wants ONE id for both, so the id it already handed back to the agent is the
+   * one `wait`/`inspect` resolve. Omitted ⇒ the engine mints a fresh ascending id.
+   */
+  id?: RunID
+  /**
    * Per-run "provider/model" override for this workflow's agents. Resolved once
    * at start into `Active.model` and applied to every agent step that doesn't
    * request its own model, taking precedence over the global
@@ -307,6 +314,7 @@ export type PipelineFn = WorkflowPipelineFn
 
 export type ContextApi = {
   readonly budgetRemaining: number
+  readonly budgetTotal: number
   readonly setPhase: (phase: string) => void
   readonly log: (message: string) => void
   readonly parallel: <T>(tasks: readonly (() => Promise<T>)[], options?: ParallelOptions) => Promise<(T | null)[]>
@@ -577,7 +585,10 @@ function mutableMeta(meta: Meta): Definition["meta"] {
 // compiled once-only limit, but hand-authored imported workflows are rare and
 // generated ones never import).
 async function loadModule(file: string): Promise<Module> {
-  const source = await Bun.file(file).text()
+  // A Claude-Code-style free-body script (literal `meta` + top-level body using
+  // global hooks, no `run` export) is rewritten into the `run(args, ctx)` module
+  // the engine executes; every other shape passes through untouched.
+  const source = CodeTransform.toRunModule(await Bun.file(file).text())
   const ext = path.extname(file)
   const transpiler = new Bun.Transpiler({ loader: ext === ".js" || ext === ".mjs" ? "js" : "ts" })
   let imported: Record<string, unknown>
@@ -737,6 +748,11 @@ function createContext(input: {
     get budgetRemaining() {
       return input.active.budgetRemaining
     },
+    // The run's total budget (USD), or `Infinity` when started without one. Read
+    // by the `budget.total`/`budget.spent()` globals exposed to a free-body script.
+    get budgetTotal() {
+      return input.active.budget
+    },
     setPhase(phase: string) {
       input.active.run.current_phase = phase
       input.persist()
@@ -779,7 +795,7 @@ function createContext(input: {
       const hasOptions = typeof last === "object" && last !== null
       const options = (hasOptions ? last : undefined) as PipelineOptions | undefined
       const stages = (hasOptions ? rest.slice(0, -1) : rest) as ReadonlyArray<
-        (prev: unknown, item: unknown) => Promise<unknown>
+        (prev: unknown, item: unknown, index: number) => Promise<unknown>
       >
       // Same clamp as parallel(): an explicit limit ≤0 is floored to 1, matching
       // parallel's `Math.max(1, …)`. Only an UNSET limit means "unbounded".
@@ -803,7 +819,7 @@ function createContext(input: {
                 let current: unknown = item
                 for (const stage of stages) {
                   checkpoint()
-                  current = await stage(current, item)
+                  current = await stage(current, item, i)
                 }
                 return current
               }),
@@ -1108,7 +1124,7 @@ export const layer = Layer.effect(
       const args = coerceArgs(input.args, module.meta.arguments, workflow.path)
       if (args instanceof InvalidError) return yield* args
       const inst = yield* InstanceState.get(state)
-      const id = RunID.ascending()
+      const id = input.id ?? RunID.ascending()
       const started_at = yield* Clock.currentTimeMillis
       const session = yield* sessions.create({ title: `Workflow: ${module.meta.name}` })
       const done = yield* Deferred.make<Run>()

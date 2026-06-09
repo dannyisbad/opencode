@@ -1,5 +1,14 @@
 import ts from "typescript"
 import { MetaReader } from "./meta-reader"
+import { CodeTransform } from "./code-transform"
+
+// Names the free-body→run() transform injects (the global hooks) plus the
+// generated `run(args, ctx)` and its parameters. A free-body script must not
+// redeclare any of these at the top level — it would shadow the preamble or
+// collide with the generated wrapper. Reserving `run` also catches the common
+// "wrote `run` but forgot to `export` it" mistake (it would otherwise be silently
+// treated as a free-body script and the author's `run` ignored).
+const RESERVED_SCRIPT_NAMES = new Set<string>([...CodeTransform.RESERVED_HOOK_NAMES, "args", "ctx", "run"])
 
 // Static safety/shape gate for CODE-tier workflow source — the code tier's
 // analogue of the declarative tier's `lint`. The LLM authors an executable
@@ -42,6 +51,11 @@ export function gateCodeSource(source: string): string[] {
   //    the engine's own AST reader gives the literal-only guarantee for free.
   const meta = MetaReader.read(source, "<dynamic-code-workflow>.ts")
   if (meta.valid === false) problems.push(`meta: ${meta.error}`)
+
+  // A free-body script (literal `meta`, no `run` export) is rewritten into a
+  // `run(args, ctx)` module by the loader's transform, so it is NOT required to
+  // export `run` (rule 8) — but it must not redeclare a hook/param name.
+  const freeBody = CodeTransform.isFreeBodyScript(source)
 
   let file: ts.SourceFile
   try {
@@ -87,7 +101,9 @@ export function gateCodeSource(source: string): string[] {
     ts.forEachChild(node, visit)
   }
 
-  // 3. Must export a `run` function (the entrypoint loadModule invokes).
+  // 3. Must export a `run` function (the entrypoint loadModule invokes) — UNLESS
+  //    it is a free-body script, which the transform wraps into one. A free-body
+  //    script additionally must not redeclare a reserved hook/param name.
   for (const stmt of file.statements) {
     if (ts.isFunctionDeclaration(stmt) && stmt.name?.text === "run" && hasExport(stmt)) hasRunExport = true
     if (ts.isVariableStatement(stmt) && hasExport(stmt)) {
@@ -95,9 +111,25 @@ export function gateCodeSource(source: string): string[] {
         if (ts.isIdentifier(decl.name) && decl.name.text === "run") hasRunExport = true
       }
     }
+    if (freeBody) {
+      const declaredNames: string[] = []
+      if ((ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt)) && stmt.name) declaredNames.push(stmt.name.text)
+      if (ts.isVariableStatement(stmt)) {
+        for (const decl of stmt.declarationList.declarations) {
+          if (ts.isIdentifier(decl.name) && decl.name.text !== "meta") declaredNames.push(decl.name.text)
+        }
+      }
+      for (const name of declaredNames) {
+        if (RESERVED_SCRIPT_NAMES.has(name)) {
+          problems.push(`"${name}" is a reserved workflow hook/parameter name and cannot be declared at the top level`)
+        }
+      }
+    }
   }
-  if (!hasRunExport) {
-    problems.push("must export an async `run(args, ctx)` function (e.g. `export async function run(args, ctx) { … }`)")
+  if (!hasRunExport && !freeBody) {
+    problems.push(
+      "must export an async `run(args, ctx)` function (e.g. `export async function run(args, ctx) { … }`), or be a free-body script: `export const meta = {…}` plus a top-level body that uses the global hooks (agent/parallel/pipeline/phase/log)",
+    )
   }
 
   visit(file)

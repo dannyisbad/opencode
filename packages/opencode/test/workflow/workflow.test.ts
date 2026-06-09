@@ -640,6 +640,32 @@ export async function run(args, ctx) { ctx.setPhase("run"); return { value: args
     }),
   )
 
+  it.instance("runs a free-body (Claude-style) script through the loader transform", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      // A literal `meta` + a FREE top-level body using global hooks (phase/parallel/
+      // log/args) and top-level `await`/`return` — no `run` export. The loader's
+      // transform wraps it into run(args, ctx). Uses non-agent thunks so it needs no
+      // prompt-ops.
+      const source = `export const meta = { name: "freebody", phases: ["go"] } as const
+phase("go")
+const xs = (await parallel([() => Promise.resolve(2), () => Promise.resolve(3)])).filter(Boolean)
+log("collected " + xs.length)
+return { sum: xs.reduce((a, b) => a + b, 0), arg: args.value }
+`
+      yield* Effect.promise(() => writeWorkflow(test.directory, "freebody", source, "ts"))
+      const workflow = yield* Workflow.Service
+      // Discoverable by the static meta-reader without executing the body.
+      const list = yield* workflow.list()
+      expect(list.map((item) => item.name)).toContain("freebody")
+      const run = yield* workflow.start({ name: "freebody", args: { value: 10 } })
+      const waited = yield* workflow.wait({ id: run.id })
+      const done = waited.run ?? (yield* Effect.fail(new Error("free-body workflow did not finish")))
+      expect(done.status).toBe("completed")
+      expect(done.result).toEqual({ sum: 5, arg: 10 })
+    }),
+  )
+
   it.instance("loads TypeScript workflow default exports", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

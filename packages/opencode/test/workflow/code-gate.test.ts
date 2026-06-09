@@ -85,4 +85,35 @@ describe("code-gate gateCodeSource", () => {
     const out = gateCodeSource(`${META}export async function run(a, c) { const o = { fs: 1, process: 2 }; return String(o.fs) }\n`)
     expect(out).toEqual([])
   })
+
+  // Free-body (Claude-style) shape: literal meta + a top-level body using the
+  // global hooks, NO `run` export. The loader's transform wraps it; the gate must
+  // accept it but still enforce the import/eval/banned-global rules.
+  test("accepts a free-body script (meta + global hooks, no run export)", () => {
+    const src = `${META}phase("p")
+const found = (await parallel([() => agent("a"), () => agent("b")])).filter(Boolean)
+log("done")
+return found
+`
+    expect(gateCodeSource(src)).toEqual([])
+  })
+
+  test("accepts a free-body script with top-level return/await", () => {
+    expect(gateCodeSource(`${META}const r = await agent("x")\nreturn r\n`)).toEqual([])
+  })
+
+  test("rejects a free-body script that redeclares a reserved hook name", () => {
+    const out = gateCodeSource(`${META}const agent = 1\nreturn agent\n`)
+    expect(out.some((p) => p.includes("agent") && p.includes("reserved"))).toBe(true)
+  })
+
+  test("rejects a free-body script with an import", () => {
+    const out = gateCodeSource(`import x from "y"\n${META}return await agent("x")\n`)
+    expect(out.some((p) => p.includes("import"))).toBe(true)
+  })
+
+  test("rejects a free-body script that touches a banned global", () => {
+    const out = gateCodeSource(`${META}return process.env.SECRET\n`)
+    expect(out.some((p) => p.includes("process"))).toBe(true)
+  })
 })

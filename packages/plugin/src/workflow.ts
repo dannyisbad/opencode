@@ -76,10 +76,10 @@ export type WorkflowLoopOptions = {
 
 export type WorkflowForEachOptions = { concurrencyLimit?: number }
 
-/** A pipeline stage: receives the previous stage's output for this item plus the
- * original item, and returns the next value. The first stage's `prev` is the
- * item itself. Stages may change the type (`I → S1 → S2 …`). */
-export type WorkflowPipelineStage<Prev, Item, Next> = (prev: Prev, item: Item) => Promise<Next>
+/** A pipeline stage: receives the previous stage's output for this item, the
+ * original item, and the item's index, and returns the next value. The first
+ * stage's `prev` is the item itself. Stages may change the type (`I → S1 → S2 …`). */
+export type WorkflowPipelineStage<Prev, Item, Next> = (prev: Prev, item: Item, index: number) => Promise<Next>
 
 /** Per-item pipeline. Each item flows through every stage SEQUENTIALLY (stage N+1
  * receives stage N's result for that item), while items run concurrently against
@@ -125,6 +125,11 @@ export type WorkflowContext = {
    * with a budget error once this reaches zero.
    */
   readonly budgetRemaining: number
+  /**
+   * The run's total budget in USD, or `Infinity` when started without one. With
+   * `budgetRemaining`, lets a workflow report or scale work against its cap.
+   */
+  readonly budgetTotal: number
   setPhase(phase: string): void
   log(message: string): void
   /**

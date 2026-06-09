@@ -16,12 +16,15 @@ import { trimDiff } from "./edit"
 import { Workflow } from "@/workflow/workflow"
 import { planDynamicWorkflow } from "@/workflow/planner"
 import { parseModelString } from "@/workflow/resilience"
+import { CodeGate } from "@/workflow/code-gate"
+import { MetaReader } from "@/workflow/meta-reader"
+import { ScriptPrompt } from "@/workflow/script-prompt"
 import { Config } from "@/config/config"
 
 const WORKFLOW_NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 const DEFAULT_TIMEOUT = 60 * 60 * 1000
 
-const Action = Schema.Literals(["read", "start", "wait", "inspect", "create", "generate"])
+const Action = Schema.Literals(["read", "start", "wait", "inspect", "create", "generate", "run"])
 const InspectView = Schema.Literals(["summary", "logs", "agents", "agent", "result", "all"])
 
 const Parameters = Schema.Struct({
@@ -60,6 +63,10 @@ const Parameters = Schema.Struct({
   source: Schema.optional(Schema.String).annotate({
     description: "Complete TypeScript workflow source for create",
   }),
+  script: Schema.optional(Schema.String).annotate({
+    description:
+      "Complete self-contained workflow SCRIPT for action=run — a literal `export const meta = {…}` followed by a free top-level body using the global hooks (agent/parallel/pipeline/phase/log). You author this directly; it runs as a background multi-agent workflow.",
+  }),
   overwrite: Schema.optional(Schema.Boolean).annotate({ description: "Overwrite an existing workflow file" }),
   objective: Schema.optional(Schema.String).annotate({
     description: "Natural language objective for action=generate. The planner will create a dynamic workflow tailored to this task.",
@@ -78,16 +85,21 @@ type Params = Schema.Schema.Type<typeof Parameters>
 type Metadata = Record<string, unknown>
 
 const DESCRIPTION = [
-  "Manage project-local workflows through one action-based tool.",
-  "Do not use workflows by default. Use this only when the user explicitly asks for a workflow, asks to create one, or confirms workflow automation.",
-  "Actions:",
-  "- read: return workflow metadata, arguments, phases, and path; use before start if behavior is unclear.",
-  "- start: start an existing workflow. Foreground waits for completion by default; background=true returns immediately and injects a completion message later.",
+  "Author and run project workflows — multi-agent orchestrations — through one action-based tool.",
+  "Do not use workflows by default. Use only when the user explicitly asks for a workflow or confirms multi-agent orchestration.",
+  "",
+  "PREFER action=run: you author a self-contained orchestration script and it runs as a background multi-agent workflow. This is the headline path — author the script yourself.",
+  "",
+  ScriptPrompt.SCRIPT_AUTHORING_GUIDE,
+  "",
+  "Other actions:",
+  "- read: return a saved workflow's metadata, arguments, phases, and path.",
+  "- start: start an existing SAVED workflow by name. Foreground waits for completion by default; background=true returns immediately and injects a completion message later.",
   "- wait: wait for a running workflow by run_id.",
-  "- inspect: inspect workflow history, logs, agents, a specific agent, result, or all details.",
-  "- create: persist a .opencode/workflows/<name>.ts file FROM SOURCE THE USER SUPPLIED. Use ONLY for a workflow the user wrote (or asked you to save verbatim). Do NOT hand-author your own workflow source here to satisfy an objective — that bypasses the planner's correctness guarantees (fan-out isolation, the verify/adversarial kind, the lint/repair loop). Use generate instead.",
-  "- generate (PREFER for any objective or task): turn a natural-language objective into a workflow. A deterministic planner + compiler builds a correct-by-construction multi-step workflow — minimal when the task is simple, with fan-out/synthesis/adversarial-verify only when the objective warrants it — and runs it. Whenever the user describes a TASK or OBJECTIVE, ALWAYS use generate; never write the workflow source yourself.",
-  "If a generate request fails (e.g. the model was rate-limited or could not produce a plan), report the failure to the user and ask whether to retry — failures are often transient. Do NOT fall back to completing the objective by hand or writing source/task files; that silently bypasses the workflow system.",
+  "- inspect: inspect a run's history, logs, agents, a specific agent, result, or all details.",
+  "- create: persist a .opencode/workflows/<name>.ts file FROM SOURCE THE USER SUPPLIED (a workflow they wrote or asked you to save verbatim).",
+  "- generate: FALLBACK — turn a natural-language objective into a workflow via a deterministic planner: a SEPARATE model authors correct-by-construction source, then it runs. Use this only when you want the planner's guarantees, or when a weaker model is driving and cannot reliably author a script. Otherwise author the script yourself with action=run.",
+  "If a RUN fails — a gate rejection OR a runtime error thrown by your script — treat it like a bug in your own code: read the error, FIX the script, and call run again. Iterate; do not report 'it failed' or fall back to doing the task by hand. Only escalate to the user after a few honest fix attempts. (If GENERATE fails — the planner could not produce a plan, often a transient rate-limit — report that and ask whether to retry; do not hand-author its source.)",
 ].join("\n")
 
 function promptOps(ctx: Tool.Context) {
@@ -330,6 +342,45 @@ function workflowMetadata(run: Workflow.Run, background: boolean) {
     workflow: run.workflow,
     background,
   }
+}
+
+// Wrap a background workflow job body so its terminal output (or failure) is
+// injected back into the originating session as the `▣` completion bubble — the
+// same synthetic `<workflow_run … kind="workflow">` part the TUI renders. The
+// display name / duration are read lazily (via getters) because the planner only
+// resolves the real name after the body starts running. Shared by generate and run.
+function withCompletionBubble<E>(input: {
+  body: Effect.Effect<string, E>
+  runId: string
+  displayName: () => string
+  durationMs: () => number | undefined
+  sessions: Session.Interface
+  ops: Workflow.PromptOps
+  scope: Scope.Scope
+  ctx: Tool.Context
+}) {
+  const inject = (state: "completed" | "error", text: string) =>
+    input.sessions.get(input.ctx.sessionID).pipe(
+      Effect.flatMap((session) =>
+        input.ops.prompt({
+          sessionID: input.ctx.sessionID,
+          agent: session.agent ?? input.ctx.agent,
+          parts: [
+            {
+              type: "text",
+              synthetic: true,
+              text: backgroundJobMessage(input.runId, input.displayName(), state, text, input.durationMs()),
+            },
+          ],
+        }),
+      ),
+      Effect.ignore,
+      Effect.forkIn(input.scope, { startImmediately: true }),
+    )
+  return input.body.pipe(
+    Effect.tap((output) => inject("completed", output)),
+    Effect.catchCause((cause) => inject("error", Cause.pretty(cause)).pipe(Effect.andThen(Effect.failCause(cause)))),
+  )
 }
 
 function startWorkflow(input: {
@@ -642,88 +693,52 @@ export const WorkflowTool = Tool.define(
                   background: true,
                   parentSessionId: ctx.sessionID,
                 },
-                run: Effect.gen(function* () {
-                  const plan = yield* planDynamicWorkflow({
-                    objective: params.objective!,
-                    model: parseModelString(params.model),
-                    generator: params.generator,
-                  })
-                  workflowDisplayName = plan.name ?? workflowName
-                  let generatedSource = plan.source
-
-                  yield* fs.writeWithDirs(filepath, generatedSource)
-                  yield* format.file(filepath).pipe(Effect.ignore)
-                  yield* events.publish(FileSystem.Event.Edited, { file: filepath })
-                  yield* events.publish(Watcher.Event.Updated, { file: filepath, event: "add" })
-                  yield* lsp.touchFile(filepath, "document")
-                  generatedSource = yield* typecheckGate(filepath, generatedSource)
-
-                  const run = yield* workflow
-                    .start({
-                      name: workflowName,
-                      args: params.args ?? {},
-                      budget: params.budget,
-                      prompt: ops,
-                      permissionSessionID: ctx.sessionID,
-                      source: generatedSource,
-                      temporary: true,
-                      model: params.model,
+                run: withCompletionBubble({
+                  body: Effect.gen(function* () {
+                    const plan = yield* planDynamicWorkflow({
+                      objective: params.objective!,
+                      model: parseModelString(params.model),
+                      generator: params.generator,
                     })
-                    .pipe(Effect.mapError(workflowError))
+                    workflowDisplayName = plan.name ?? workflowName
+                    let generatedSource = plan.source
 
-                  const waited = yield* waitForWorkflow(workflow, run)
-                  workflowDurationMs =
-                    waited.run.completed_at != null ? waited.run.completed_at - waited.run.started_at : undefined
-                  const error = runFailure(waited.run)
-                  if (error) return yield* Effect.fail(error)
-                  return terminalOutput(waited.run)
-                }).pipe(
-                  Effect.tap((output) =>
-                    sessions.get(ctx.sessionID).pipe(
-                      Effect.flatMap((session) =>
-                        ops.prompt({
-                          sessionID: ctx.sessionID,
-                          agent: session.agent ?? ctx.agent,
-                          parts: [
-                            {
-                              type: "text",
-                              synthetic: true,
-                              text: backgroundJobMessage(
-                                runId,
-                                workflowDisplayName,
-                                "completed",
-                                output,
-                                workflowDurationMs,
-                              ),
-                            },
-                          ],
-                        }),
-                      ),
-                      Effect.ignore,
-                      Effect.forkIn(scope, { startImmediately: true }),
-                    ),
-                  ),
-                  Effect.catchCause((cause) =>
-                    sessions.get(ctx.sessionID).pipe(
-                      Effect.flatMap((session) =>
-                        ops.prompt({
-                          sessionID: ctx.sessionID,
-                          agent: session.agent ?? ctx.agent,
-                          parts: [
-                            {
-                              type: "text",
-                              synthetic: true,
-                              text: backgroundJobMessage(runId, workflowDisplayName, "error", Cause.pretty(cause)),
-                            },
-                          ],
-                        }),
-                      ),
-                      Effect.ignore,
-                      Effect.forkIn(scope, { startImmediately: true }),
-                      Effect.andThen(Effect.failCause(cause)),
-                    ),
-                  ),
-                ),
+                    yield* fs.writeWithDirs(filepath, generatedSource)
+                    yield* format.file(filepath).pipe(Effect.ignore)
+                    yield* events.publish(FileSystem.Event.Edited, { file: filepath })
+                    yield* events.publish(Watcher.Event.Updated, { file: filepath, event: "add" })
+                    yield* lsp.touchFile(filepath, "document")
+                    generatedSource = yield* typecheckGate(filepath, generatedSource)
+
+                    const run = yield* workflow
+                      .start({
+                        id: runId,
+                        name: workflowName,
+                        args: params.args ?? {},
+                        budget: params.budget,
+                        prompt: ops,
+                        permissionSessionID: ctx.sessionID,
+                        source: generatedSource,
+                        temporary: true,
+                        model: params.model,
+                      })
+                      .pipe(Effect.mapError(workflowError))
+
+                    const waited = yield* waitForWorkflow(workflow, run)
+                    workflowDurationMs =
+                      waited.run.completed_at != null ? waited.run.completed_at - waited.run.started_at : undefined
+                    const error = runFailure(waited.run)
+                    if (error) return yield* Effect.fail(error)
+                    return terminalOutput(waited.run)
+                  }),
+                  runId,
+                  displayName: () => workflowDisplayName,
+                  durationMs: () => workflowDurationMs,
+                  sessions,
+                  ops,
+                  scope,
+                  ctx,
+                }),
               })
 
               yield* ctx.metadata({
@@ -806,6 +821,138 @@ export const WorkflowTool = Tool.define(
               title: waited.timedOut
                 ? `Dynamic workflow still running: ${run.workflow}`
                 : `Dynamic workflow finished: ${run.workflow}`,
+              metadata: { ...workflowMetadata(run, false), jobId: "", timedOut: waited.timedOut },
+              output: waited.timedOut
+                ? [
+                    formatRunSummary(waited.run),
+                    '<instructions>Use the workflow tool with action="wait" and this run_id to wait for completion.</instructions>',
+                  ].join("\n")
+                : terminalOutput(waited.run),
+            }
+          }
+
+          if (params.action === "run") {
+            if (!params.script) return yield* Effect.fail(new Error("script is required for action=run"))
+            const cfg = yield* config.get()
+            let dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true
+            if (!dynamicWorkflowsEnabled && ctx.sessionID) {
+              const sess = yield* sessions.get(ctx.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              if (sess?.metadata?.ultracode_enabled === true) dynamicWorkflowsEnabled = true
+            }
+            if (!dynamicWorkflowsEnabled) {
+              return yield* Effect.fail(new Error("Dynamic workflows are disabled in config"))
+            }
+
+            // Preflight the agent-authored script through the SAME static gate the
+            // planner's code tier uses (literal meta; no imports / dynamic import /
+            // require / eval / banned globals; free-body or run() shape). On a
+            // problem, return it as a readable result so the agent re-authors —
+            // never silently swap in the planner (that would undo "the agent
+            // authored it").
+            const problems = CodeGate.gateCodeSource(params.script)
+            if (problems.length > 0) {
+              return {
+                title: "Workflow script rejected",
+                metadata: { problems },
+                output: [
+                  "<error>The workflow script did not pass the static gate. Fix these and call run again:</error>",
+                  ...problems.map((p) => `- ${p}`),
+                ].join("\n"),
+              }
+            }
+
+            const ops = promptOps(ctx)
+            const instance = yield* InstanceState.context
+            const projectRoot = instance.worktree === "/" ? instance.directory : instance.worktree
+            const dynamicDir = path.join(projectRoot, ".opencode", "workflows", ".dynamic")
+            const runId = Workflow.RunID.ascending()
+            const workflowName = `dynamic-${runId}`
+            const filepath = path.join(dynamicDir, `${workflowName}.ts`)
+            // Human-friendly label from the script's literal meta (the opaque file
+            // id is the fallback).
+            const metaRead = MetaReader.read(params.script, filepath)
+            const displayName = metaRead.valid ? metaRead.meta.name : workflowName
+            const script = params.script
+
+            yield* ctx.ask({
+              permission: "workflow",
+              patterns: ["run"],
+              always: ["run"],
+              metadata: { workflowName: displayName },
+            })
+
+            const writeAndStart = (source: string) =>
+              Effect.gen(function* () {
+                yield* fs.writeWithDirs(filepath, source)
+                yield* format.file(filepath).pipe(Effect.ignore)
+                yield* events.publish(FileSystem.Event.Edited, { file: filepath })
+                yield* events.publish(Watcher.Event.Updated, { file: filepath, event: "add" })
+                yield* lsp.touchFile(filepath, "document")
+                return yield* workflow
+                  .start({
+                    id: runId,
+                    name: workflowName,
+                    args: params.args ?? {},
+                    budget: params.budget,
+                    prompt: ops,
+                    permissionSessionID: ctx.sessionID,
+                    source,
+                    temporary: true,
+                    model: params.model,
+                  })
+                  .pipe(Effect.mapError(workflowError))
+              })
+
+            if (params.background !== false) {
+              // Start the run SYNCHRONOUSLY (there is no planning step to defer, unlike
+              // generate), so its id — the same `runId` we hand back — resolves through
+              // wait/inspect immediately; only the wait + completion bubble are
+              // backgrounded.
+              const run = yield* writeAndStart(script)
+              let workflowDurationMs: number | undefined
+              const job = yield* background.start({
+                id: runId,
+                type: "workflow",
+                title: displayName,
+                metadata: { runId, workflow: displayName, background: true, parentSessionId: ctx.sessionID },
+                run: withCompletionBubble({
+                  body: Effect.gen(function* () {
+                    const waited = yield* waitForWorkflow(workflow, run)
+                    workflowDurationMs =
+                      waited.run.completed_at != null ? waited.run.completed_at - waited.run.started_at : undefined
+                    const error = runFailure(waited.run)
+                    if (error) return yield* Effect.fail(error)
+                    return terminalOutput(waited.run)
+                  }),
+                  runId,
+                  displayName: () => displayName,
+                  durationMs: () => workflowDurationMs,
+                  sessions,
+                  ops,
+                  scope,
+                  ctx,
+                }),
+              })
+
+              yield* ctx.metadata({
+                title: displayName,
+                metadata: { runId, workflow: displayName, background: true, jobId: job.id },
+              })
+              return {
+                title: `Workflow started: ${displayName}`,
+                metadata: { runId, workflow: displayName, background: true, jobId: job.id, timedOut: false },
+                output: backgroundGenerateStarted(runId, displayName),
+              }
+            }
+
+            const run = yield* writeAndStart(script)
+            yield* ctx.metadata({
+              title: run.definition?.meta.name ?? run.workflow,
+              metadata: workflowMetadata(run, false),
+            })
+            const waited = yield* waitForWorkflow(workflow, run, params.timeout ?? DEFAULT_TIMEOUT)
+            return {
+              title: waited.timedOut ? `Workflow still running: ${run.workflow}` : `Workflow finished: ${run.workflow}`,
               metadata: { ...workflowMetadata(run, false), jobId: "", timedOut: waited.timedOut },
               output: waited.timedOut
                 ? [
