@@ -431,7 +431,14 @@ export const ShellTool = Tool.define(
       if (process.platform === "win32") {
         if (Shell.posix(shell) && text.startsWith("/") && FSUtil.windowsPath(text) === text) {
           const file = yield* cygpath(shell, text)
-          if (file) return file
+          // git-bash's cygpath resolves a drive-less posix path like /Users/...
+          // against the MSYS install root (C:\Program Files\Git\Users\...) — a
+          // location that doesn't really exist — instead of the intended
+          // drive-relative C:\Users\.... Only trust cygpath when its result lands
+          // somewhere real (the path or its parent exists): true for genuine Git
+          // Bash mounts (/tmp → %TEMP%, /c/... → C:\...), false for a drive-less
+          // Windows path, which then falls through to drive-relative resolution.
+          if (file && ((yield* fs.existsSafe(file)) || (yield* fs.existsSafe(path.dirname(file))))) return file
         }
         return FSUtil.normalizePath(path.resolve(root, FSUtil.windowsPath(text)))
       }
