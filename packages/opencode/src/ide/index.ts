@@ -75,12 +75,6 @@ export async function install(ide: (typeof SUPPORTED_IDES)[number]["name"]) {
   const stdout = p.stdout.toString()
   const stderr = p.stderr.toString()
 
-  log.info("installed", {
-    ide,
-    stdout,
-    stderr,
-  })
-
   if (p.code !== 0) {
     throw new InstallFailedError({ stderr })
   }

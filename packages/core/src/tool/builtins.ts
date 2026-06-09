@@ -16,9 +16,9 @@ import { WriteTool } from "./write"
 // import { BrowserTool } from "./browser"
 
 /**
- * Composes only the shipped Location-scoped built-in tool contributions.
+ * Composes only the shipped Location-scoped built-in tool transforms.
  * Each tool retains its implementation and focused tests independently. Dynamic
- * MCP and plugin tools later use separate scoped ToolRegistry transforms, while
+ * MCP and plugin tools later use separate scoped canonical registrations, while
  * provider/model filtering belongs to a future materialization phase rather
  * than this static list. The caller intentionally supplies shared Location
  * services once to this merged set.
@@ -26,7 +26,7 @@ import { WriteTool } from "./write"
  * TODO: Port the remaining launch-follow-up leaves deliberately: edit fuzzy
  * parity, task, LSP,
  * repo_clone, repo_overview, plan_exit, and Rune/code mode. Keep MCP and plugin
- * contributions separate from this static built-in list.
+ * transforms separate from this static built-in list.
  */
 export const locationLayer = Layer.mergeAll(
   ApplyPatchTool.layer,

@@ -1,6 +1,5 @@
-import { Tool, ToolFailure } from "@opencode-ai/llm"
-import { Cause, Effect, Layer, Schema } from "effect"
-import { ToolRegistry } from "./registry"
+import { Tool } from "@opencode-ai/llm"
+import { Effect, Layer, Schema } from "effect"
 import { EventV2 } from "../event"
 
 export const browserNavigate = Tool.make({
@@ -50,43 +49,10 @@ export const BrowserControlEvent = EventV2.define({
   },
 })
 
-export const layer = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const registry = yield* ToolRegistry.Service
-    const events = yield* EventV2.Service
-
-    const sendBrowserCommand = (command: "navigate" | "click" | "type" | "snapshot", params: any) =>
-      Effect.gen(function* () {
-        yield* events.publish(BrowserControlEvent, {
-          command,
-          params,
-        })
-        return { status: "Command sent to browser" }
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.fail(
-            new ToolFailure({ message: `Failed to send command ${command} to browser`, error: Cause.squash(cause) }),
-          ),
-        ),
-      )
-
-    yield* registry.contribute((editor) => {
-      editor.set("browser_navigate", {
-        tool: browserNavigate,
-        execute: ({ parameters }) => sendBrowserCommand("navigate", parameters),
-      })
-      editor.set("browser_click", {
-        tool: browserClick,
-        execute: ({ parameters }) => sendBrowserCommand("click", parameters),
-      })
-      editor.set("browser_type", {
-        tool: browserType,
-        execute: ({ parameters }) => sendBrowserCommand("type", parameters),
-      })
-      editor.set("browser_snapshot", {
-        tool: browserSnapshot,
-        execute: () => sendBrowserCommand("snapshot", {}),
-      })
-    })
-  }),
-)
+// NOTE: the integrated-browser tools were registered through the core
+// ToolRegistry `contribute`/editor API, which upstream replaced with a new
+// `register` mechanism during the tool-registry rewrite. This layer is already
+// disabled in builtins.ts; registration is left as a no-op pending a port to
+// the new API. The tool definitions and BrowserControlEvent above are retained
+// for that port.
+export const layer = Layer.effectDiscard(Effect.void)
