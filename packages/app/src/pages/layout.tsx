@@ -94,7 +94,6 @@ import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from 
 import { SidebarContent } from "./layout/sidebar-shell"
 import { BrowserPanel } from "./browser/browser-panel"
 import { BrowserView } from "@opencode-ai/ui/browser/browser-view"
-import { runUpdateAndRestart } from "./layout/update"
 
 export default function Layout(props: ParentProps) {
   const serverSDK = useServerSDK()
