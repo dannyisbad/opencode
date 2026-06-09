@@ -13,9 +13,12 @@ export type GeneratorSetting = "code" | "declarative" | "auto"
 export type GeneratorTier = "code" | "declarative"
 
 // Built-in capable set (globs, `*` = any run of chars). anthropic opus/sonnet,
-// openai gpt-5 / o3 / o4, google gemini-3 pro. Deliberately conservative — small
-// models (haiku, flash, mini) and unknown ids fall through to declarative.
-// Extend without a code change via dynamic_workflows.code_capable_models.
+// openai gpt-5 / o3 / o4, google gemini-3 pro + flash. The gemini-3 flash tier is
+// strong enough to author orchestration code by hand, and the code path has a
+// gate + declarative fallback beneath it, so a rare bad module degrades safely
+// rather than breaking. Still conservative for the rest — older/other small
+// models (haiku, mini, gemini-2.x flash) and unknown ids fall through to
+// declarative. Extend without a code change via dynamic_workflows.code_capable_models.
 const DEFAULT_CODE_MODELS = [
   "anthropic/*opus*",
   "anthropic/*sonnet*",
@@ -23,6 +26,7 @@ const DEFAULT_CODE_MODELS = [
   "openai/o3*",
   "openai/o4*",
   "google/gemini-3*pro*",
+  "google/gemini-3*flash*",
 ] as const
 
 function escapeRegex(s: string): string {
