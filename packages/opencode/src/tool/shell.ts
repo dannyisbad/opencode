@@ -66,6 +66,12 @@ function renderBashBackground(input: {
   }
   const exitStr = input.exit != null ? ` (exit ${input.exit})` : ""
   const elapsed = input.durationMs != null ? ` in ${formatElapsed(input.durationMs)}` : ""
+  // `terminal_error` is reserved for INFRASTRUCTURE failures (the background
+  // limit killed it, the spawn died, the user killed it). A command that ran to
+  // completion with a non-zero exit is a normal result — grep exits 1 on no
+  // match, PowerShell exits 1 on suppressed non-terminating errors — and its
+  // output is the payload, not an error message. Branding those as errors made
+  // models discard successful output and blindly re-run long commands.
   const tag = input.state === "error" ? "terminal_error" : "terminal_result"
   const attrs = [
     `id="${input.id}"`,
@@ -704,8 +710,10 @@ export const ShellTool = Tool.define(
 
       // Stamp the result into the registry (read by the foreground path for rich
       // metadata, and by the completion-notify), and return the output string —
-      // which becomes the BackgroundJob's `output`.
-      const status: ShellBackground.Status = (code != null && code !== 0) || expired ? "error" : "completed"
+      // which becomes the BackgroundJob's `output`. A non-zero exit code is a
+      // normal completion (the code rides along in the result/bubble); only an
+      // infrastructure kill (the background limit) is an error.
+      const status: ShellBackground.Status = expired ? "error" : "completed"
       yield* shellBg.setExit(id, code, status)
       yield* shellBg.setResult(id, {
         output,
@@ -761,8 +769,11 @@ export const ShellTool = Tool.define(
               Effect.gen(function* () {
                 const entry = yield* shellBg.get(id)
                 const exit = entry?.exitCode ?? null
+                // Error = the command did NOT run to completion (limit-killed,
+                // user-killed, worker died). A non-zero exit code is a completed
+                // command whose result the model should read, not an error.
                 const state: "completed" | "error" =
-                  entry?.status === "error" || (exit != null && exit !== 0) ? "error" : "completed"
+                  entry?.status === "error" || entry?.status === "killed" ? "error" : "completed"
                 const durationMs =
                   res.info?.completed_at != null && res.info?.started_at != null
                     ? res.info.completed_at - res.info.started_at

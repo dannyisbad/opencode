@@ -9,12 +9,22 @@ import { afterAll } from "bun:test"
 // Set XDG env vars FIRST, before any src/ imports
 const dir = path.join(os.tmpdir(), "opencode-test-data-" + process.pid)
 await fs.mkdir(dir, { recursive: true })
+// Explicit timeout: this teardown (runtime dispose + the GC/EBUSY retry loop
+// below, worst case several seconds) regularly exceeds bun's DEFAULT 5s hook
+// timeout. The package "test" script passes --timeout 30000, but a direct
+// `bun test <file>` does not — which made fast pure test files (capability,
+// code-gate) flake with a phantom "(unnamed) hook timed out" failure.
 afterAll(async () => {
   const { AppRuntime } = await import("../src/effect/app-runtime")
   await AppRuntime.dispose()
 
+  // EBUSY/EPERM/EACCES are the same transient class on Windows (open handles,
+  // AV scans, pending deletes) — rimraf retries all three for the same reason.
   const busy = (error: unknown) =>
-    typeof error === "object" && error !== null && "code" in error && error.code === "EBUSY"
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "EBUSY" || error.code === "EPERM" || error.code === "EACCES")
   const rm = async (left: number): Promise<void> => {
     Bun.gc(true)
     await sleep(100)
@@ -29,7 +39,7 @@ afterAll(async () => {
   // Windows can keep SQLite WAL handles alive until GC finalizers run, so we
   // force GC and retry teardown to avoid flaky EBUSY in test cleanup.
   await rm(30)
-})
+}, { timeout: 30_000 })
 
 process.env["XDG_DATA_HOME"] = path.join(dir, "share")
 process.env["XDG_CACHE_HOME"] = path.join(dir, "cache")

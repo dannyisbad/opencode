@@ -1148,6 +1148,58 @@ describe("tool.shell abort", () => {
     15_000,
   )
 
+  it.live(
+    "a non-zero exit is a completed result, not an error (output survives in the bubble)",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          // grep exits 1 on no match, PowerShell exits 1 on suppressed errors —
+          // a command that RAN with a non-zero code is a result the model must
+          // read, not a failure to retry. Reserve <terminal_error> for the
+          // infrastructure (limit-kill / user-kill).
+          const prompts: { text: string }[] = []
+          const result = yield* run(
+            {
+              command: `echo found-the-thing; exit 3`,
+              description: "Exit-code probe",
+              background: true,
+            },
+            {
+              ...ctx,
+              extra: {
+                promptOps: {
+                  prompt: (input: { parts: { type: string; text?: string }[] }) =>
+                    Effect.sync(() => {
+                      for (const part of input.parts) {
+                        if (part.type === "text" && part.text) prompts.push({ text: part.text })
+                      }
+                      return { parts: [] }
+                    }),
+                },
+              },
+            } as never,
+          )
+          expect(result.output).toContain("running in background")
+
+          const bubble = yield* Effect.gen(function* () {
+            for (let i = 0; i < 100; i++) {
+              const hit = prompts.find((p) => p.text.includes("Exit-code probe") && !p.text.includes('state="running"'))
+              if (hit) return hit.text
+              yield* Effect.sleep("100 millis")
+            }
+            return yield* Effect.fail(new Error("completion bubble never injected"))
+          })
+          expect(bubble).toContain('state="completed"')
+          expect(bubble).toContain('exit="3"')
+          expect(bubble).toContain("<terminal_result>")
+          expect(bubble).toContain("found-the-thing")
+          expect(bubble).not.toContain("<terminal_error>")
+        }),
+      ),
+    20_000,
+  )
+
   if (process.platform !== "win32") {
     it.live("captures stderr in output", () =>
       runIn(
