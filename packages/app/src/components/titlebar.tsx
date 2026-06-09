@@ -450,6 +450,8 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                           refreshTabsAreOverflowing()
                         })
 
+                        if (tab.type !== "session") return null
+
                         return (
                           <>
                             {i() !== 0 && (

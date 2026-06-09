@@ -1,3 +1,6 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
+import { Ripgrep } from "@opencode-ai/core/filesystem/ripgrep"
 import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
@@ -34,7 +37,6 @@ import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
 import { Pty } from "@opencode-ai/core/pty"
-import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { EventV2 } from "@opencode-ai/core/event"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
@@ -52,7 +54,6 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
-import { Reference } from "@/reference/reference"
 import { BackgroundJob } from "@/background/job"
 import * as ShellBackground from "./shell/background"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -89,6 +90,9 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
 
+// NOTE: kept inferred (not upstream's explicit Layer type) — our registry
+// requires extra services beyond upstream's set (Workflow, Pty, ShellBackground,
+// EventV2, Ripgrep), so an explicit annotation would need hand-maintaining.
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -378,7 +382,6 @@ export const defaultLayer = Layer.suspend(() =>
           BackgroundJob.defaultLayer,
           ShellBackground.defaultLayer,
           Provider.defaultLayer,
-          Reference.defaultLayer,
           LSP.defaultLayer,
           Instruction.defaultLayer,
           FSUtil.defaultLayer,
@@ -480,5 +483,33 @@ function normalizeZodJsonSchema(value: unknown): unknown {
 function isJsonSchemaObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
+
+export const node = LayerNode.make(layer, [
+  Config.node,
+  Plugin.node,
+  Question.node,
+  Todo.node,
+  Agent.node,
+  Skill.node,
+  Session.node,
+  BackgroundJob.node,
+  ShellBackground.node,
+  Workflow.node,
+  Provider.node,
+  LSP.node,
+  Instruction.node,
+  FSUtil.node,
+  EventV2.node,
+  EventV2Bridge.node,
+  httpClient,
+  CrossSpawnSpawner.node,
+  Ripgrep.node,
+  Pty.node,
+  Search.node,
+  Format.node,
+  Truncate.node,
+  RuntimeFlags.node,
+  Database.node,
+])
 
 export * as ToolRegistry from "./registry"

@@ -1,3 +1,4 @@
+import { LayerNode } from "./effect/layer-node"
 export * as Pty from "./pty"
 
 import type { Disp, Proc } from "#pty"
@@ -312,4 +313,10 @@ export const defaultLayer = layer.pipe(
   Layer.provide(EventV2.defaultLayer),
   Layer.provide(Location.defaultLayer),
 )
+
+// Layer-graph node. Built from the SELF-CONTAINED defaultLayer (not the bare
+// `layer`): the bare layer requires EventV2 + Location, and Location is a
+// ref-factory deliberately kept out of the node graph, so Pty participates as a
+// self-contained leaf subgraph instead.
+export const node = LayerNode.make(defaultLayer, [])
 

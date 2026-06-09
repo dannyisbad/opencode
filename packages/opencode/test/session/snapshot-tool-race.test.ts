@@ -63,8 +63,6 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { Pty } from "@opencode-ai/core/pty"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Format } from "../../src/format"
-import { Reference } from "../../src/reference/reference"
-import { RepositoryCache } from "../../src/reference/repository-cache"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Workflow } from "@/workflow/workflow"
 
@@ -143,9 +141,7 @@ function makeHttp() {
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),
-    Layer.provide(RepositoryCache.defaultLayer),
     Layer.provide(Git.defaultLayer),
-    Layer.provide(Reference.defaultLayer),
     Layer.provide(Search.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Pty.defaultLayer),
@@ -174,7 +170,6 @@ function makeHttp() {
     SessionPrompt.layer.pipe(
       Layer.provide(SessionRevert.defaultLayer),
       Layer.provide(Image.defaultLayer),
-      Layer.provide(Reference.defaultLayer),
       Layer.provide(SessionSummary.defaultLayer),
       Layer.provideMerge(run),
       Layer.provideMerge(compact),

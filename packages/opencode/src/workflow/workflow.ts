@@ -8,6 +8,7 @@ import { Session } from "@/session/session"
 import type { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
 import { Database } from "@opencode-ai/core/database/database"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { type DeepMutable, withStatics } from "@opencode-ai/core/schema"
@@ -1577,5 +1578,15 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Provider.defaultLayer),
   Layer.provide(Config.defaultLayer),
 )
+
+// Layer-graph node (upstream's typed application layer graph). Edges mirror the
+// services the engine layer consumes (see defaultLayer above).
+export const node = LayerNode.make(layer, [
+  Database.node,
+  Session.node,
+  Agent.node,
+  Provider.node,
+  Config.node,
+])
 
 export * as Workflow from "./workflow"

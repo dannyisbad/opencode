@@ -2483,6 +2483,12 @@ describe("ProviderTransform.message - cache control on gateway", () => {
   })
 })
 
+describe("ProviderTransform.temperature - Cohere North", () => {
+  test("defaults north-mini-code models to 1.0", () => {
+    expect(ProviderTransform.temperature({ id: "cohere/North-Mini-Code-1-0-latest" } as any)).toBe(1.0)
+  })
+})
+
 describe("ProviderTransform.variants", () => {
   const createMockModel = (overrides: Partial<any> = {}): any => ({
     id: "test/test-model",
@@ -2666,7 +2672,7 @@ describe("ProviderTransform.variants", () => {
   })
 
   describe("@openrouter/ai-sdk-provider", () => {
-    test("returns empty object for non-qualifying models", () => {
+    test("returns widely supported efforts for other reasoning models", () => {
       const model = createMockModel({
         id: "openrouter/test-model",
         providerID: "openrouter",
@@ -2677,7 +2683,8 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(result).toEqual({})
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+      expect(result.medium).toEqual({ reasoning: { effort: "medium" } })
     })
 
     test("gpt models return OPENAI_EFFORTS with reasoning", () => {
@@ -2697,6 +2704,7 @@ describe("ProviderTransform.variants", () => {
     })
 
     for (const testCase of [
+      { id: "openai/o3-mini", efforts: ["none", "minimal", "low", "medium", "high", "xhigh"] },
       { id: "openai/gpt-5.4", efforts: ["none", "low", "medium", "high", "xhigh"] },
       { id: "openai/gpt-5-pro", efforts: ["high"] },
       { id: "openai/gpt-5.5-pro", efforts: ["medium", "high", "xhigh"] },
@@ -2722,7 +2730,7 @@ describe("ProviderTransform.variants", () => {
       })
     }
 
-    test("gemini-3 returns OPENAI_EFFORTS with reasoning", () => {
+    test("gemini-3 returns widely supported efforts with reasoning", () => {
       const model = createMockModel({
         id: "openrouter/gemini-3-5-pro",
         providerID: "openrouter",
@@ -2733,7 +2741,7 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
     })
 
     test("grok-4 returns empty object", () => {
@@ -3207,6 +3215,23 @@ describe("ProviderTransform.variants", () => {
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
+
+    test("north-mini-code-1-0 returns only none and high", () => {
+      const model = createMockModel({
+        id: "cohere/north-mini-code-1-0",
+        providerID: "cohere",
+        api: {
+          id: "North-Mini-Code-1-0-latest",
+          url: "https://api.cohere.com/compatibility/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+      })
+      const result = ProviderTransform.variants(model)
+      expect(result).toEqual({
+        none: { reasoningEffort: "none" },
+        high: { reasoningEffort: "high" },
+      })
+    })
   })
 
   describe("@ai-sdk/azure", () => {
@@ -3458,6 +3483,12 @@ describe("ProviderTransform.variants", () => {
       {
         name: "opus 4.8",
         apiIds: ["claude-opus-4-8", "claude-opus-4.8"],
+        efforts: ["low", "medium", "high", "xhigh", "max"],
+        expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
+      },
+      {
+        name: "fable 5",
+        apiIds: ["claude-fable-5"],
         efforts: ["low", "medium", "high", "xhigh", "max"],
         expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
       },
@@ -3983,6 +4014,23 @@ describe("ProviderTransform.smallOptions - gpt-5 chat/search", () => {
       expect(ProviderTransform.smallOptions(createModel(testCase.id))).toEqual(testCase.options)
     })
   }
+})
+
+test("ProviderTransform.smallOptions disables OpenRouter reasoning when the weakest effort is low", () => {
+  expect(
+    ProviderTransform.smallOptions({
+      providerID: "openrouter",
+      api: {
+        id: "anthropic/claude-sonnet-4.6",
+        npm: "@openrouter/ai-sdk-provider",
+      },
+      variants: {
+        low: { reasoning: { effort: "low" } },
+        medium: { reasoning: { effort: "medium" } },
+        high: { reasoning: { effort: "high" } },
+      },
+    } as any),
+  ).toEqual({ reasoning: { effort: "none" } })
 })
 
 describe("ProviderTransform.smallOptions - google thinking controls", () => {

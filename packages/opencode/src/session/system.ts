@@ -1,3 +1,4 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { Ide } from "@/ide"
@@ -140,5 +141,7 @@ export function getIdeContext(): string[] {
     `</ide-context>`,
   ]
 }
+
+export const node = LayerNode.make(layer, [Skill.node, Workflow.node, Config.node])
 
 export * as SystemPrompt from "./system"

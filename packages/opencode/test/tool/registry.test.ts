@@ -33,8 +33,6 @@ import { Pty } from "@opencode-ai/core/pty"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import * as Truncate from "@/tool/truncate"
 import { InstanceState } from "@/effect/instance-state"
-import { Reference } from "@/reference/reference"
-import { RepositoryCache } from "@/reference/repository-cache"
 
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { MessageID, SessionID } from "@/session/schema"
@@ -70,8 +68,6 @@ const registryLayer = (opts: RegistryLayerOptions = {}) =>
           ShellBackground.defaultLayer,
           Provider.defaultLayer,
           Git.defaultLayer,
-          RepositoryCache.defaultLayer,
-          Reference.defaultLayer,
           LSP.defaultLayer,
           Instruction.defaultLayer,
           FSUtil.defaultLayer,

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 
 export type Status = "running" | "completed" | "error" | "killed"
 
@@ -117,3 +118,7 @@ export const layer = Layer.effect(
 )
 
 export const defaultLayer = layer
+
+// Layer-graph node (upstream's typed application layer graph). Self-contained —
+// the registry is instance-scoped via InstanceState, requiring no other service.
+export const node = LayerNode.make(layer, [])

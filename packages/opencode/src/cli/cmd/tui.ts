@@ -337,11 +337,11 @@ export const TuiThreadCommand = cmd({
       } finally {
         await stop()
       }
-      process.exit(0)
     } finally {
       try {
         unguard?.()
       } catch {}
     }
+    process.exit(0)
   },
 })
