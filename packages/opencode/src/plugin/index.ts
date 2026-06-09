@@ -20,7 +20,7 @@ import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cl
 import { AzureAuthPlugin } from "./azure"
 import { DigitalOceanAuthPlugin } from "./digitalocean"
 import { XaiAuthPlugin } from "./xai"
-import { Effect, Layer, Context } from "effect"
+import { Effect, Layer, Context, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
@@ -247,13 +247,31 @@ export const layer = Layer.effect(
           )
         }
 
+        const pluginScope = yield* Scope.Scope
         const unsubscribe = yield* events.listen((event) => {
           if (event.location?.directory !== ctx.directory) return Effect.void
-          return Effect.sync(() => {
-            for (const hook of hooks) {
-              void hook["event"]?.({ event: { id: event.id, type: event.type, properties: event.data } as any })
-            }
-          })
+          // Fire-and-forget, but CONTAINED: the previous `void hook.event(...)`
+          // let any async hook failure escape as an unhandled promise rejection
+          // that took down the whole server (observed live: a third-party
+          // plugin's EPERM on a state-file rename under concurrent session.idle
+          // storms crashed sessions at random). A plugin hook failure is the
+          // plugin's problem — log it and keep serving. Forked so a slow plugin
+          // never blocks the event bus.
+          return Effect.forEach(
+            hooks,
+            (hook) =>
+              Effect.tryPromise({
+                try: () =>
+                  Promise.resolve(
+                    hook["event"]?.({ event: { id: event.id, type: event.type, properties: event.data } as any }),
+                  ),
+                catch: errorMessage,
+              }).pipe(
+                Effect.tapError((error) => Effect.logError("plugin event hook failed", { type: event.type, error })),
+                Effect.ignore,
+              ),
+            { discard: true },
+          ).pipe(Effect.forkIn(pluginScope), Effect.asVoid)
         })
         yield* Effect.addFinalizer(() => unsubscribe)
 

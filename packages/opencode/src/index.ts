@@ -29,6 +29,28 @@ import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
+import { Global } from "@opencode-ai/core/global"
+import { appendFileSync } from "fs"
+import path from "path"
+
+// Process-level safety net. Without it, ANY escaped promise rejection or
+// uncaught exception (a third-party plugin hook, a fire-and-forget fiber, a
+// native module) makes Bun print a raw stack to stderr — which, while the TUI
+// owns the alternate screen, splatters garbage over the whole UI — and can take
+// the process down mid-session. Log to the file (always), mirror to stderr only
+// when stdout is not a TTY (pipes/CI keep their debuggability), and keep running.
+function logUncaught(kind: string, error: unknown) {
+  const detail = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)
+  try {
+    appendFileSync(
+      path.join(Global.Path.log, "opencode.log"),
+      `timestamp=${new Date().toISOString()} level=ERROR message=${JSON.stringify(kind)} error=${JSON.stringify(detail)}\n`,
+    )
+  } catch {}
+  if (!process.stdout.isTTY) process.stderr.write(`[opencode] ${kind}: ${detail}\n`)
+}
+process.on("unhandledRejection", (reason) => logUncaught("unhandled rejection", reason))
+process.on("uncaughtException", (error) => logUncaught("uncaught exception", error))
 
 const args = hideBin(process.argv)
 

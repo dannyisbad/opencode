@@ -211,6 +211,27 @@ for (const item of targets) {
       console.error(`Smoke test failed for ${name}:`, e)
       process.exit(1)
     }
+
+    // Sync the fresh binary onto PATH (~/.local/bin precedes the bun-installed
+    // release in PATH, so bare `opencode` is always the CURRENT dev build — the
+    // release binary dies on fork-only config keys like `dynamic_workflows`).
+    // A running copy can't be overwritten on Windows, but it CAN be renamed:
+    // move it aside, then copy the new one in. Best-effort — never fail a build.
+    if (process.platform === "win32") {
+      const home = process.env.USERPROFILE ?? process.env.HOME
+      if (home) {
+        const target = path.join(home, ".local", "bin", "opencode.exe")
+        try {
+          await fs.promises.mkdir(path.dirname(target), { recursive: true })
+          await fs.promises.rename(target, `${target}.prev`).catch(() => {})
+          await fs.promises.copyFile(path.resolve(`dist/${name}/bin/opencode.exe`), target)
+          await fs.promises.unlink(`${target}.prev`).catch(() => {})
+          console.log(`Synced binary to PATH: ${target}`)
+        } catch (e) {
+          console.warn(`PATH sync skipped (${target}):`, e instanceof Error ? e.message : e)
+        }
+      }
+    }
   }
 
   await $`rm -rf ./dist/${name}/bin/tui`
