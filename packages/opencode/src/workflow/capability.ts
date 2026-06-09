@@ -12,21 +12,43 @@ import type { ModelDesc } from "./resilience"
 export type GeneratorSetting = "code" | "declarative" | "auto"
 export type GeneratorTier = "code" | "declarative"
 
-// Built-in capable set (globs, `*` = any run of chars). anthropic opus/sonnet,
-// openai gpt-5 / o3 / o4, google gemini-3 pro + flash. The gemini-3 flash tier is
-// strong enough to author orchestration code by hand, and the code path has a
-// gate + declarative fallback beneath it, so a rare bad module degrades safely
-// rather than breaking. Still conservative for the rest — older/other small
-// models (haiku, mini, gemini-2.x flash) and unknown ids fall through to
-// declarative. Extend without a code change via dynamic_workflows.code_capable_models.
+// Built-in capable set (globs, `*` = any run of chars), curated from hands-on
+// authoring results across the fleet. Provider-agnostic (`*/model`): the same
+// model is offered through several providers (google / github-copilot /
+// google-antigravity / opencode-go / openai) and capability follows the MODEL,
+// not the route. Variant suffixes (-preview, -low, -fast, -mini of a capable
+// version, -free, -thinking) inherit their base model's capability.
+//
+// Deliberately NOT capable (fall through to the declarative floor): haiku,
+// gpt-5-mini (the pre-5.4 mini), gemini ≤3.0 pro / non-agent 3.0 flash / all
+// 2.x, flash-lite, image/tts/video/embedding models, minimax ≤m2.x,
+// deepseek-v4-flash, qwen ≤3.6, grok, gemma, big-pickle, and anything unknown.
+// Extend without a code change via dynamic_workflows.code_capable_models.
 const DEFAULT_CODE_MODELS = [
-  "anthropic/*opus*",
-  "anthropic/*sonnet*",
-  "openai/gpt-5*",
+  // anthropic family (any provider)
+  "*/claude-opus*",
+  "*/claude-sonnet*",
+  // openai family
+  "*/gpt-5.3-codex*",
+  "*/gpt-5.4*",
+  "*/gpt-5.5*",
   "openai/o3*",
   "openai/o4*",
-  "google/gemini-3*pro*",
-  "google/gemini-3*flash*",
+  // gemini family
+  "*/gemini-3.1-pro*",
+  "*/gemini-3.5-flash*",
+  "*/gemini-3-flash-agent*",
+  "*/gemini-pro-agent*",
+  // open-weights / aggregator models
+  "*/kimi-k2.5*",
+  "*/kimi-k2.6*",
+  "*/glm-5*",
+  "*/minimax-m3*",
+  "*/qwen3.7*",
+  "*/mimo-v2.5*",
+  "*/deepseek-v4-pro*",
+  "*/nemotron-3-ultra*",
+  "*/north-mini-code*",
 ] as const
 
 function escapeRegex(s: string): string {
