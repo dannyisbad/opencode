@@ -75,7 +75,10 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
       const projectRoot = instance.worktree === "/" ? instance.directory : instance.worktree
       const dynamicDir = path.join(projectRoot, ".opencode", "workflows", ".dynamic")
       const runId = Workflow.RunID.ascending()
-      const workflowName = `dynamic-${runId.slice(0, 8)}`
+      // Full run id, not slice(0, 8): the truncation is constant for a long
+      // window, so concurrent/successive generates collided on one
+      // `dynamic-job_xxxx.ts` and clobbered each other. The full id is unique.
+      const workflowName = `dynamic-${runId}`
       const filepath = path.join(dynamicDir, `${workflowName}.ts`)
       const plan = yield* planDynamicWorkflow({
         objective: ctx.payload.objective,

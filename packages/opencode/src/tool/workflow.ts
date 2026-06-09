@@ -587,7 +587,12 @@ export const WorkflowTool = Tool.define(
                 : (params.objective ?? "Dynamic workflow")
             const dynamicDir = path.join(projectRoot, ".opencode", "workflows", ".dynamic")
             const runId = Workflow.RunID.ascending()
-            const workflowName = `dynamic-${runId.slice(0, 8)}`
+            // Use the FULL run id: `runId.slice(0, 8)` is only `job_` + the top
+            // bytes of the timestamp, which stay constant for a long window, so
+            // every generate in a session collapsed to the same `dynamic-job_xxxx`
+            // file and clobbered the previous one (and raced when two ran
+            // concurrently). The full id is unique per run and filename-safe.
+            const workflowName = `dynamic-${runId}`
             const filepath = path.join(dynamicDir, `${workflowName}.ts`)
 
             // Stage-B gate: a code-tier module passes the planner's static gate

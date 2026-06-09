@@ -555,26 +555,46 @@ function mutableMeta(meta: Meta): Definition["meta"] {
   }
 }
 
-// Each call imports the file fresh through a unique temp-file copy, so a
-// workflow edited between calls is always reloaded. We deliberately do NOT keep
-// a cross-call module cache, and we do not rely on a `?mtime=` query either:
-// Bun's module cache is not reliably invalidated by a query string alone, so a
-// cached or query-busted import can serve a stale `run`/`meta` after an edit
-// (the realtime-update bug). Correctness over micro-optimization — the
-// double-load that motivated the original finding is already gone because
-// start() now loads only the target module instead of calling list().
+// Load a workflow module fresh on every call so an edit is always reflected: no
+// cross-call module cache, and no `?mtime=` busting (Bun does not reliably
+// invalidate either, which would serve a stale `run`/`meta` after an edit).
+//
+// Import-free workflows — every generated one, since the code gate forbids
+// imports — are transpiled in-process and imported via an in-memory `data:`
+// URL. This is REQUIRED for the packaged binary, not an optimization: a
+// compiled Bun executable can dynamically import an EXTERNAL on-disk module
+// only ONCE per process. After the first `import(file://…)`, the loader for
+// non-embedded files is dead and every later import throws
+// "Cannot find module … from B/~BUN/root/<exe>" — which silently broke every
+// dynamic workflow after the first in a long-lived session. A `data:` URL is
+// resolved in memory and is immune, so repeated loads work in the binary and in
+// dev. Each call rebuilds the URL from the current source, so edits still
+// reload (changed source → different URL → fresh module).
+//
+// A `data:` URL has no base path, so it cannot resolve a workflow's own
+// `import` specifiers; a workflow that statically imports therefore falls back
+// to a fresh on-disk temp copy (unchanged behavior — still subject to the
+// compiled once-only limit, but hand-authored imported workflows are rare and
+// generated ones never import).
 async function loadModule(file: string): Promise<Module> {
   const source = await Bun.file(file).text()
   const ext = path.extname(file)
-  const cachePath = path.join(
-    path.dirname(file),
-    `.${path.basename(file, ext)}.${Date.now()}.${Math.random().toString(16).slice(2)}${ext === ".js" ? ".mjs" : ".mts"}`,
-  )
-  await Bun.write(cachePath, source)
-  const imported = (await import(pathToFileURL(cachePath).href).finally(() => Bun.file(cachePath).delete())) as Record<
-    string,
-    unknown
-  >
+  const transpiler = new Bun.Transpiler({ loader: ext === ".js" || ext === ".mjs" ? "js" : "ts" })
+  let imported: Record<string, unknown>
+  if (transpiler.scan(source).imports.length === 0) {
+    const url = "data:text/javascript;base64," + Buffer.from(transpiler.transformSync(source)).toString("base64")
+    imported = (await import(url)) as Record<string, unknown>
+  } else {
+    const cachePath = path.join(
+      path.dirname(file),
+      `.${path.basename(file, ext)}.${Date.now()}.${Math.random().toString(16).slice(2)}${ext === ".js" ? ".mjs" : ".mts"}`,
+    )
+    await Bun.write(cachePath, source)
+    imported = (await import(pathToFileURL(cachePath).href).finally(() => Bun.file(cachePath).delete())) as Record<
+      string,
+      unknown
+    >
+  }
   const module = (
     typeof imported.default === "object" && imported.default !== null ? imported.default : imported
   ) as Record<string, unknown>
