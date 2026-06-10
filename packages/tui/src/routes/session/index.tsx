@@ -71,6 +71,7 @@ import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { BackgroundFooter } from "./background-footer.tsx"
 import { collectBackgroundCommands } from "./background-data.ts"
+import { DialogBackgroundShell } from "../../component/dialog-background-shell"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -153,6 +154,7 @@ const sessionBindingCommands = [
   "session.export",
   "session.child.first",
   "session.workflow.open",
+  "session.shell.view",
   "session.parent",
   "session.child.next",
   "session.child.previous",
@@ -1212,6 +1214,21 @@ export function Session() {
       },
     },
     {
+      title: "View background commands",
+      value: "session.shell.view",
+      category: "Session",
+      slash: {
+        name: "shells",
+        aliases: ["bg"],
+      },
+      run: () => {
+        const running = backgroundCommands().filter((command) => command.status === "running")
+        dialog.replace(() => (
+          <DialogBackgroundShell sessionID={route.sessionID} id={running.length === 1 ? running[0].id : undefined} />
+        ))
+      },
+    },
+    {
       title: "Go to parent session",
       value: "session.parent",
       category: "Session",
@@ -1560,39 +1577,37 @@ const MIME_BADGE: Record<string, string> = {
   "application/x-directory": "dir",
 }
 
-// A backgrounded workflow / subagent / terminal injects its completion as a
-// SYNTHETIC user text part wrapping the full model-facing XML (`<workflow_run>`,
-// `<task>`, `<terminal_run>`). That XML is for the agent; the human gets a single
-// compact line built HERE from the tag's structured attributes (`label`/`exit`/
-// `elapsed`), NOT the model-facing `<summary>` prose. Falls back to the summary
-// only when a producer didn't emit the structured attributes. NOTE: bash
-// completions (`kind="bash"`) are NOT rendered inline at all — their lifecycle
-// lives in the persistent BackgroundFooter strip; `bash` is returned so the
-// caller can skip them.
+// A backgrounded workflow / subagent / terminal / bash command injects its
+// completion as a SYNTHETIC user text part wrapping the full model-facing XML
+// (`<workflow_run>`, `<task>`, `<terminal_run>`). That XML is for the agent;
+// the human gets a single compact line built HERE from the tag's structured
+// attributes (`label`/`exit`/`elapsed`), NOT the model-facing `<summary>`
+// prose. Falls back to the summary only when a producer didn't emit the
+// structured attributes. Bash completions render inline too — the
+// BackgroundFooter strip only shows commands while they RUN, so this row is
+// the durable record once one finishes.
 function parseBackgroundCompletion(
   text: string,
-): { state: "completed" | "error"; name: string; detail: string; bash: boolean } | undefined {
+): { state: "completed" | "error"; name: string; detail: string } | undefined {
   const m = /^\s*<(workflow_run|task|terminal_run)\b[^>]*\bstate="(completed|error|failed)"/.exec(text)
   if (!m) return undefined
   const kind = m[1]
   const state: "completed" | "error" = m[2] === "completed" ? "completed" : "error"
   const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(text)?.[1]
-  const bash = kind === "terminal_run" && attr("kind") === "bash"
   const label = attr("label")
   const exit = attr("exit")
   const elapsed = attr("elapsed")
-  const verb = state === "completed" ? "completed" : "failed"
+  const verb = state === "completed" ? "finished" : "failed"
+  const noun = kind === "workflow_run" ? "Workflow" : kind === "task" ? "Background task" : "Background command"
   if (label) {
-    // opencode-native row style: `▣ <name> · <status> · <elapsed>`. Workflows get
-    // a "Workflow" prefix; terminals show their exit code.
-    const name = kind === "workflow_run" ? `Workflow ${label}` : label
-    const exitStr = exit !== undefined ? ` (exit ${exit})` : ""
-    const elapsedStr = elapsed ? ` · ${elapsed}` : ""
-    return { state, name, detail: `${verb}${exitStr}${elapsedStr}`, bash }
+    // Verb-first row: `▣ Background command finished: <label> · exit 0 · 15s` —
+    // reads as an event announcement, not a bare chip.
+    const detail = [exit !== undefined ? `exit ${exit}` : undefined, elapsed].filter(Boolean).join(" · ")
+    return { state, name: `${noun} ${verb}: ${label}`, detail }
   }
   // Fallback for producers without structured attrs (e.g. legacy subagent tasks).
   const sm = /<summary>([\s\S]*?)<\/summary>/.exec(text)
-  return { state, name: (sm?.[1] ?? `Background task ${verb}`).trim(), detail: "", bash }
+  return { state, name: (sm?.[1] ?? `${noun} ${verb}`).trim(), detail: "" }
 }
 
 function UserMessage(props: {
@@ -1630,8 +1645,22 @@ function UserMessage(props: {
     for (const p of props.parts) {
       if (p.type === "text" && p.synthetic) {
         const parsed = parseBackgroundCompletion(p.text)
-        // bash completions live in the BackgroundFooter strip, not inline.
-        if (parsed && !parsed.bash) return parsed
+        if (parsed) return parsed
+      }
+    }
+    return undefined
+  })
+
+  // A bash monitor injection: `<monitor_event label="…">matched lines…</monitor_event>`.
+  // Rendered as a compact ◉ row plus the matched lines (capped) instead of raw XML.
+  const monitorEvent = createMemo(() => {
+    for (const p of props.parts) {
+      if (p.type === "text" && p.synthetic) {
+        const open = /^\s*<monitor_event\b[^>]*\blabel="([^"]*)"/.exec(p.text)
+        if (!open) continue
+        const body = /<monitor_event\b[^>]*>\n?([\s\S]*?)\n?<\/monitor_event>/.exec(p.text)?.[1] ?? ""
+        const lines = body.split("\n").filter((line) => line.trim().length > 0)
+        return { label: open[1], lines }
       }
     }
     return undefined
@@ -1639,6 +1668,46 @@ function UserMessage(props: {
 
   return (
     <>
+      <Show when={monitorEvent()}>
+        {(event) => {
+          const MAX_SHOWN = 6
+          const shown = createMemo(() => event().lines.slice(0, MAX_SHOWN))
+          const more = createMemo(() => event().lines.length - shown().length)
+          return (
+            <>
+              <InlineToolRow
+                id={props.message.id}
+                icon="◉"
+                color={theme.text}
+                iconColor={theme.textMuted}
+                complete={true}
+                pending=""
+                separateAfter={() => true}
+              >
+                <>
+                  {event().label}
+                  <span style={{ fg: theme.textMuted }}>
+                    {" "}
+                    · {event().lines.length} matched line{event().lines.length === 1 ? "" : "s"}
+                  </span>
+                </>
+              </InlineToolRow>
+              <box paddingLeft={6}>
+                <For each={shown()}>
+                  {(line) => (
+                    <text fg={theme.textMuted} wrapMode="none" truncate>
+                      {line}
+                    </text>
+                  )}
+                </For>
+                <Show when={more() > 0}>
+                  <text fg={theme.textMuted}>+{more()} more</text>
+                </Show>
+              </box>
+            </>
+          )
+        }}
+      </Show>
       <Show when={backgroundCompletion()}>
         {(completion) => (
           <InlineToolRow
@@ -1650,6 +1719,10 @@ function UserMessage(props: {
             complete={true}
             failed={completion().state === "error"}
             pending=""
+            // A background return is an event boundary, not part of the tool
+            // run above it — always separate it with a blank line, even after
+            // inline tool rows (the sibling-margin default would jam it flush).
+            separateAfter={() => true}
           >
             <>
               {completion().name}

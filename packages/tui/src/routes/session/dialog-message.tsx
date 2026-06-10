@@ -1,6 +1,7 @@
 import { createMemo } from "solid-js"
 import { useSync } from "../../context/sync"
 import { DialogSelect } from "../../ui/dialog-select"
+import type { DialogContext } from "../../ui/dialog"
 import { useSDK } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useClipboard } from "../../context/clipboard"
@@ -18,6 +19,35 @@ export function DialogMessage(props: {
   const route = useRoute()
   const clipboard = useClipboard()
 
+  // Shared by Revert and Soft revert; `soft` keeps file changes (same as /sundo).
+  const revert = (dialog: DialogContext, soft: boolean) => {
+    const msg = message()
+    if (!msg) return
+
+    void sdk.client.session.revert({
+      sessionID: props.sessionID,
+      messageID: msg.id,
+      ...(soft ? { soft: true } : {}),
+    })
+
+    if (props.setPrompt) {
+      const parts = sync.data.part[msg.id]
+      const promptInfo = parts.reduce(
+        (agg, part) => {
+          if (part.type === "text") {
+            if (!part.synthetic) agg.input += part.text
+          }
+          if (part.type === "file") agg.parts.push(strip(part))
+          return agg
+        },
+        { input: "", parts: [] as PromptInfo["parts"] },
+      )
+      props.setPrompt(promptInfo)
+    }
+
+    dialog.clear()
+  }
+
   return (
     <DialogSelect
       title="Message Actions"
@@ -26,32 +56,13 @@ export function DialogMessage(props: {
           title: "Revert",
           value: "session.revert",
           description: "undo messages and file changes",
-          onSelect: (dialog) => {
-            const msg = message()
-            if (!msg) return
-
-            void sdk.client.session.revert({
-              sessionID: props.sessionID,
-              messageID: msg.id,
-            })
-
-            if (props.setPrompt) {
-              const parts = sync.data.part[msg.id]
-              const promptInfo = parts.reduce(
-                (agg, part) => {
-                  if (part.type === "text") {
-                    if (!part.synthetic) agg.input += part.text
-                  }
-                  if (part.type === "file") agg.parts.push(strip(part))
-                  return agg
-                },
-                { input: "", parts: [] as PromptInfo["parts"] },
-              )
-              props.setPrompt(promptInfo)
-            }
-
-            dialog.clear()
-          },
+          onSelect: (dialog) => revert(dialog, false),
+        },
+        {
+          title: "Soft revert",
+          value: "session.srevert",
+          description: "undo messages, keep file changes",
+          onSelect: (dialog) => revert(dialog, true),
         },
         {
           title: "Copy",

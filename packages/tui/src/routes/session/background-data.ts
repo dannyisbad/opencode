@@ -12,8 +12,9 @@ import type { Part } from "@opencode-ai/sdk/v2"
 //    elapsed="…">` into the conversation (it re-prompts the model).
 //
 // Both shapes share the id, so a later completion flips the earlier running
-// entry. Completed entries are RETAINED for the life of the session (parity
-// with how subagent task tabs persist).
+// entry. Completed entries are still returned (the flip is how a running row
+// clears), but the strip only DISPLAYS running ones — a finished command's
+// durable record is its inline ▣ completion row in scrollback.
 export type BackgroundCommand = {
   id: string
   label: string
