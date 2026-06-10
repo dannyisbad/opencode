@@ -1,19 +1,21 @@
-import { createMemo, For, Show } from "solid-js"
+import { createMemo, createSignal, For, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { Spinner } from "../../component/spinner"
-import { useCommandShortcut } from "../../keymap"
+import { useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import type { BackgroundCommand } from "./background-data"
 
 const MAX_ROWS = 4
 
 // Persistent strip for background bash commands — the opencode-native
 // counterpart to subagent task tabs. Running commands spin; finished ones
-// persist (●/◍ + exit/elapsed) for the life of the session instead of
-// scrolling away as inline history rows.
+// persist (✔/✖ + exit/elapsed, the same status idiom as dialog-workflow) for
+// the life of the session instead of scrolling away as inline history rows.
 export function BackgroundFooter(props: { commands: BackgroundCommand[]; runningForeground: boolean }) {
   const { theme } = useTheme()
+  const keymap = useOpencodeKeymap()
   const backgroundShortcut = useCommandShortcut("session.background")
+  const [hover, setHover] = createSignal(false)
 
   const visible = createMemo(() => props.commands.slice(0, MAX_ROWS))
   const overflow = createMemo(() => props.commands.length - visible().length)
@@ -44,9 +46,16 @@ export function BackgroundFooter(props: { commands: BackgroundCommand[]; running
             <b>Background commands</b>
           </text>
           <Show when={props.runningForeground && backgroundShortcut()}>
-            <text fg={theme.text} wrapMode="none">
-              Background <span style={{ fg: theme.textMuted }}>{backgroundShortcut()}</span>
-            </text>
+            <box
+              onMouseOver={() => setHover(true)}
+              onMouseOut={() => setHover(false)}
+              onMouseUp={() => keymap.dispatchCommand("session.background")}
+              backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+            >
+              <text fg={theme.text} wrapMode="none">
+                Background <span style={{ fg: theme.textMuted }}>{backgroundShortcut()}</span>
+              </text>
+            </box>
           </Show>
         </box>
         <For each={visible()}>
@@ -55,8 +64,8 @@ export function BackgroundFooter(props: { commands: BackgroundCommand[]; running
               <Show
                 when={command.status === "running"}
                 fallback={
-                  <text fg={command.status === "error" ? theme.error : theme.textMuted} wrapMode="none">
-                    {command.status === "error" ? "◍" : "●"}
+                  <text fg={command.status === "error" ? theme.error : theme.success} wrapMode="none">
+                    {command.status === "error" ? "✖" : "✔"}
                   </text>
                 }
               >
