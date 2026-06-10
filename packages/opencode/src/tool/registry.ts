@@ -242,6 +242,15 @@ export const layer = Layer.effect(
             tool.invalid,
             ...(questionEnabled ? [tool.question] : []),
             tool.shell,
+            // Companions for backgrounded bash commands. These were initialized
+            // but never listed since the feature shipped, so the completion
+            // bubble told models to call tools that didn't exist — models got
+            // "unavailable tool", concluded background bash was broken, and
+            // defaulted to terminal sessions (create/send/read) for anything
+            // long-running. Without these, background bash is fire-and-forget
+            // with no way to read output or stop the command.
+            tool.bash_output,
+            tool.bash_kill,
             tool.terminal,
             tool.read,
             tool.glob,

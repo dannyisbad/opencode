@@ -1,9 +1,12 @@
 Executes a command in a TTY-aware terminal session with full PTY support. Unlike the bash tool which spawns a new process for each call, this tool uses an interactive pseudo-terminal (PTY), giving commands access to a real TTY.
 
-Use this tool when:
-- Running commands that require a TTY (sudo, ssh, vim, htop, top, gpg)
-- Executing commands that need interactive input (passwords, passphrases, confirmations)
-- Running programs that check `isatty()` or require terminal features
+ONLY use this tool when the command genuinely needs a TTY or interactive stdin:
+- Commands that require a TTY (sudo, ssh, vim, htop, top, gpg)
+- Commands that need interactive input mid-run (passwords, passphrases, confirmations)
+- Programs that check `isatty()` or require terminal features
+- A persistent REPL you will feed input over multiple turns
+
+For EVERYTHING else — including long-running non-interactive commands (builds, tests, dev servers, bots, watchers) — use the bash tool instead. Backgrounded bash (`background: true`, or automatic after the 30s foreground window) notifies you when the command exits; read incremental output with `bash_output` and stop it with `bash_kill`. Do NOT open a terminal session just to poll output you could get from bash — polling burns turns; bash notifies you for free.
 
 Be aware: OS: ${os}, Shell: ${shell}
 
