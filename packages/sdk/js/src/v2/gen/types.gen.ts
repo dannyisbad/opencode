@@ -1790,6 +1790,7 @@ export type PermissionConfig =
 
 export type AgentConfig = {
   model?: string
+  backupModel?: Array<string>
   variant?: string
   temperature?: number
   top_p?: number
@@ -1814,6 +1815,7 @@ export type AgentConfig = {
   [key: string]:
     | unknown
     | string
+    | Array<string>
     | number
     | {
         [key: string]: boolean
@@ -2462,6 +2464,10 @@ export type Agent = {
     modelID: string
     providerID: string
   }
+  backupModel?: Array<{
+    modelID: string
+    providerID: string
+  }>
   variant?: string
   prompt?: string
   options: {
