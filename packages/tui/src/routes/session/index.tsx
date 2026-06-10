@@ -69,6 +69,8 @@ import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { DialogWorkflow } from "../../component/dialog-workflow"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
+import { BackgroundFooter } from "./background-footer.tsx"
+import { collectBackgroundCommands } from "./background-data.ts"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -240,6 +242,14 @@ export function Session() {
       (sync.data.part[message.id] ?? []).some(
         (part) => part.type === "tool" && part.tool === "bash" && part.state.status === "running",
       ),
+    ),
+  )
+  // Backgrounded bash commands (running + persisted-completed), derived purely
+  // from synced parts — feeds the BackgroundFooter strip.
+  const backgroundCommands = createMemo(() =>
+    collectBackgroundCommands(
+      messages().map((message) => message.id),
+      sync.data.part,
     ),
   )
   const userMessageIDs = createMemo(
@@ -1485,6 +1495,9 @@ export function Session() {
                 <Show when={session()?.parentID}>
                   <SubagentFooter />
                 </Show>
+                <Show when={backgroundCommands().length > 0 || runningBash()}>
+                  <BackgroundFooter commands={backgroundCommands()} runningForeground={runningBash()} />
+                </Show>
                 <Show when={visible()}>
                   <pluginRuntime.Slot
                     name="session_prompt"
@@ -1550,17 +1563,21 @@ const MIME_BADGE: Record<string, string> = {
 // A backgrounded workflow / subagent / terminal injects its completion as a
 // SYNTHETIC user text part wrapping the full model-facing XML (`<workflow_run>`,
 // `<task>`, `<terminal_run>`). That XML is for the agent; the human gets a single
-// compact Claude-Code-style line built HERE from the tag's structured attributes
-// (`label`/`exit`/`elapsed`), NOT the model-facing `<summary>` prose. Falls back
-// to the summary only when a producer didn't emit the structured attributes.
+// compact line built HERE from the tag's structured attributes (`label`/`exit`/
+// `elapsed`), NOT the model-facing `<summary>` prose. Falls back to the summary
+// only when a producer didn't emit the structured attributes. NOTE: bash
+// completions (`kind="bash"`) are NOT rendered inline at all — their lifecycle
+// lives in the persistent BackgroundFooter strip; `bash` is returned so the
+// caller can skip them.
 function parseBackgroundCompletion(
   text: string,
-): { state: "completed" | "error"; name: string; detail: string } | undefined {
+): { state: "completed" | "error"; name: string; detail: string; bash: boolean } | undefined {
   const m = /^\s*<(workflow_run|task|terminal_run)\b[^>]*\bstate="(completed|error|failed)"/.exec(text)
   if (!m) return undefined
   const kind = m[1]
   const state: "completed" | "error" = m[2] === "completed" ? "completed" : "error"
   const attr = (name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(text)?.[1]
+  const bash = kind === "terminal_run" && attr("kind") === "bash"
   const label = attr("label")
   const exit = attr("exit")
   const elapsed = attr("elapsed")
@@ -1571,11 +1588,11 @@ function parseBackgroundCompletion(
     const name = kind === "workflow_run" ? `Workflow ${label}` : label
     const exitStr = exit !== undefined ? ` (exit ${exit})` : ""
     const elapsedStr = elapsed ? ` · ${elapsed}` : ""
-    return { state, name, detail: `${verb}${exitStr}${elapsedStr}` }
+    return { state, name, detail: `${verb}${exitStr}${elapsedStr}`, bash }
   }
   // Fallback for producers without structured attrs (e.g. legacy subagent tasks).
   const sm = /<summary>([\s\S]*?)<\/summary>/.exec(text)
-  return { state, name: (sm?.[1] ?? `Background task ${verb}`).trim(), detail: "" }
+  return { state, name: (sm?.[1] ?? `Background task ${verb}`).trim(), detail: "", bash }
 }
 
 function UserMessage(props: {
@@ -1613,7 +1630,8 @@ function UserMessage(props: {
     for (const p of props.parts) {
       if (p.type === "text" && p.synthetic) {
         const parsed = parseBackgroundCompletion(p.text)
-        if (parsed) return parsed
+        // bash completions live in the BackgroundFooter strip, not inline.
+        if (parsed && !parsed.bash) return parsed
       }
     }
     return undefined
@@ -2431,12 +2449,13 @@ function Shell(props: ToolProps) {
   const isRunning = createMemo(() => props.part.state.status === "running")
   // When a bash command is backgrounded, the tool returns a `<terminal_run
   // state="running" kind="bash">` block as its OUTPUT (the completed part's
-  // state.output, = props.output) — same as the Terminal tool. Render the compact
-  // Claude-Code-style "▣ <label> · running in background" row instead of the XML.
+  // state.output, = props.output) — same as the Terminal tool. The lifecycle
+  // lives in the BackgroundFooter strip (opencode-native, like subagent tabs),
+  // so render only a minimal "$ <command>" inline row, not the XML and not a
+  // Claude-Code-style status bubble.
   const bg = createMemo(() => {
     const out = props.output ?? ""
-    if (!/^\s*<terminal_run\b[^>]*\bstate="running"/.test(out)) return undefined
-    return { label: /\blabel="([^"]*)"/.exec(out)?.[1] ?? "command" }
+    return /^\s*<terminal_run\b[^>]*\bstate="running"/.test(out)
   })
   const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
   const [expanded, setExpanded] = createSignal(false)
@@ -2465,12 +2484,9 @@ function Shell(props: ToolProps) {
   return (
     <Switch>
       <Match when={bg()}>
-        {(info) => (
-          <InlineTool icon="▣" iconColor={theme.textMuted} color={theme.text} complete={true} pending="" part={props.part}>
-            {info().label}
-            <span style={{ fg: theme.textMuted }}> · running in background</span>
-          </InlineTool>
-        )}
+        <InlineTool icon="$" pending="" complete={true} part={props.part}>
+          {stringValue(props.input.command)}
+        </InlineTool>
       </Match>
       <Match when={stringValue(props.metadata.output) !== undefined}>
         <BlockTool
