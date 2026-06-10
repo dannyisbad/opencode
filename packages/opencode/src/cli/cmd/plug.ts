@@ -44,8 +44,23 @@ export type PlugCtx = {
   directory: string
 }
 
+function createNonTTYSpinner(): Spin {
+  return {
+    start: (msg: string) => {
+      process.stderr.write(msg + "...")
+    },
+    stop: (msg: string, code?: number) => {
+      if (code && code !== 0) {
+        process.stderr.write(" failed\n")
+      } else {
+        process.stderr.write(" " + msg + "\n")
+      }
+    },
+  }
+}
+
 const defaultPlugDeps: PlugDeps = {
-  spinner: () => spinner(),
+  spinner: () => (process.stdout.isTTY ? spinner() : createNonTTYSpinner()),
   log: {
     error: (msg) => log.error(msg),
     info: (msg) => log.info(msg),
