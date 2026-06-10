@@ -3,35 +3,15 @@ import path from "path"
 import fs from "fs/promises"
 import { fileURLToPath, pathToFileURL } from "url"
 import { Effect, Layer, Result, Schema } from "effect"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Database } from "@opencode-ai/core/database/database"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ToolRegistry } from "@/tool/registry"
 import { Tool } from "@/tool/tool"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
-import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Config } from "@/config/config"
 import { Plugin } from "@/plugin"
-import { Question } from "@/question"
-import { Todo } from "@/session/todo"
-import { Skill } from "@/skill"
 import { Agent } from "@/agent/agent"
-import { BackgroundJob } from "@/background/job"
-import * as ShellBackground from "@/tool/shell/background"
-import { Session } from "@/session/session"
-import { SessionStatus } from "@/session/status"
-import { Provider } from "@/provider/provider"
-import { Git } from "@/git"
-import { LSP } from "@/lsp/lsp"
-import { Instruction } from "@/session/instruction"
-import { EventV2Bridge } from "@/event-v2-bridge"
-import { FetchHttpClient } from "effect/unstable/http"
-import { Format } from "@/format"
-import { Search } from "@opencode-ai/core/filesystem/search"
-import { EventV2 } from "@opencode-ai/core/event"
-import { Pty } from "@opencode-ai/core/pty"
-import { Ripgrep } from "@opencode-ai/core/ripgrep"
-import * as Truncate from "@/tool/truncate"
 import { InstanceState } from "@/effect/instance-state"
 
 import { ToolJsonSchema } from "@/tool/json-schema"
@@ -41,57 +21,9 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Workflow } from "@/workflow/workflow"
 import { ModelV2 } from "@opencode-ai/core/model"
 
-const node = CrossSpawnSpawner.defaultLayer
 const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".opencode")])),
 })
-
-type RegistryLayerOptions = {
-  flags?: Partial<RuntimeFlags.Info>
-  plugin?: Layer.Layer<Plugin.Service>
-}
-
-const registryLayer = (opts: RegistryLayerOptions = {}) =>
-  ToolRegistry.layer
-    .pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          configLayer,
-          opts.plugin ?? Plugin.defaultLayer,
-          Question.defaultLayer,
-          Todo.defaultLayer,
-          Skill.defaultLayer,
-          Agent.defaultLayer,
-          Session.defaultLayer,
-          SessionStatus.defaultLayer,
-          BackgroundJob.defaultLayer,
-          ShellBackground.defaultLayer,
-          Provider.defaultLayer,
-          Git.defaultLayer,
-          LSP.defaultLayer,
-          Instruction.defaultLayer,
-          FSUtil.defaultLayer,
-          EventV2Bridge.defaultLayer,
-          FetchHttpClient.layer,
-          Format.defaultLayer,
-          node,
-          Database.defaultLayer,
-          EventV2.defaultLayer,
-          Search.defaultLayer,
-          Ripgrep.defaultLayer,
-          Pty.defaultLayer,
-          Truncate.defaultLayer,
-        )
-      )
-    )
-    .pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          Workflow.defaultLayer,
-          RuntimeFlags.layer(opts.flags ?? {}),
-        )
-      )
-    )
 
 // Fake Plugin.Service that returns a single plugin whose `tool` map contains
 // one definition with `args: undefined`. Used to exercise the plugin entry
@@ -117,9 +49,17 @@ const brokenPluginLayer = Layer.succeed(
   }),
 )
 
-const it = testEffect(Layer.mergeAll(registryLayer(), node, Agent.defaultLayer))
+const root = LayerNode.group([ToolRegistry.node, Agent.node])
+const replacements = [
+  LayerNode.replace(Config.node, configLayer),
+  LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer()),
+]
+
+const it = testEffect(LayerNode.buildLayer(root, { replacements }))
 const withBrokenPlugin = testEffect(
-  Layer.mergeAll(registryLayer({ plugin: brokenPluginLayer }), node, Agent.defaultLayer),
+  LayerNode.buildLayer(root, {
+    replacements: [...replacements, LayerNode.replace(Plugin.node, brokenPluginLayer)],
+  }),
 )
 
 afterEach(async () => {

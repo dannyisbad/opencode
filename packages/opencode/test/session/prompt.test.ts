@@ -49,7 +49,6 @@ import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Search } from "@opencode-ai/core/filesystem/search"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Pty } from "@opencode-ai/core/pty"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
@@ -197,7 +196,6 @@ function makePrompt(input?: { processor?: "blocking" }) {
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),
     Layer.provide(Git.defaultLayer),
-    Layer.provide(Search.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Pty.defaultLayer),
     Layer.provide(Format.defaultLayer),

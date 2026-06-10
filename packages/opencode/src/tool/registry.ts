@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
-import { Ripgrep } from "@opencode-ai/core/filesystem/ripgrep"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
@@ -41,7 +41,6 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Search } from "@opencode-ai/core/filesystem/search"
 import { Format } from "../format"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
@@ -399,7 +398,6 @@ export const defaultLayer = Layer.suspend(() =>
           FetchHttpClient.layer,
           Format.defaultLayer,
           CrossSpawnSpawner.defaultLayer,
-          Search.defaultLayer,
           Ripgrep.defaultLayer,
           Pty.defaultLayer,
           Truncate.defaultLayer,
@@ -493,7 +491,7 @@ function isJsonSchemaObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-export const node = LayerNode.make(layer, [
+export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer)), [
   Config.node,
   Plugin.node,
   Question.node,
@@ -514,7 +512,6 @@ export const node = LayerNode.make(layer, [
   CrossSpawnSpawner.node,
   Ripgrep.node,
   Pty.node,
-  Search.node,
   Format.node,
   Truncate.node,
   RuntimeFlags.node,
