@@ -1113,19 +1113,22 @@ describe("tool.shell abort", () => {
   )
 
   it.live(
-    "auto-backgrounds a command that exceeds the foreground window",
+    "kills the command at an explicit timeout and returns a completed result",
     () =>
       runIn(
         projectRoot,
         Effect.gen(function* () {
-          // `timeout` is now the foreground window: the command is NOT killed,
-          // it is promoted to the background with a running bubble.
+          // `timeout` is the kill deadline: the command is stopped there and the
+          // captured output returns synchronously as a normal completed result
+          // (the deliberate "run X for N seconds" outcome), not an error and not
+          // a background promotion.
           const result = yield* run({
             command: `sleep 60`,
             description: "Long sleep",
             timeout: 500,
           })
-          expect(result.output).toContain("running in background")
+          expect(result.output).not.toContain("running in background")
+          expect(result.output).toContain("stopped the command at the requested")
         }),
       ),
     15_000,
@@ -1195,6 +1198,55 @@ describe("tool.shell abort", () => {
           expect(bubble).toContain("<terminal_result>")
           expect(bubble).toContain("found-the-thing")
           expect(bubble).not.toContain("<terminal_error>")
+        }),
+      ),
+    20_000,
+  )
+
+  it.live(
+    "monitor pushes matching lines as monitor_event injections",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const prompts: { text: string }[] = []
+          const result = yield* run(
+            {
+              command: `echo ALERT-one; echo nothing-here; echo ALERT-two`,
+              description: "Monitor probe",
+              monitor: "ALERT-",
+            },
+            {
+              ...ctx,
+              extra: {
+                promptOps: {
+                  prompt: (input: { parts: { type: string; text?: string }[] }) =>
+                    Effect.sync(() => {
+                      for (const part of input.parts) {
+                        if (part.type === "text" && part.text) prompts.push({ text: part.text })
+                      }
+                      return { parts: [] }
+                    }),
+                },
+              },
+            } as never,
+          )
+          // monitor implies background: the call returns immediately with the
+          // running bubble, which advertises the armed pattern.
+          expect(result.output).toContain("running in background")
+          expect(result.output).toContain("monitor is armed")
+
+          const event = yield* Effect.gen(function* () {
+            for (let i = 0; i < 100; i++) {
+              const hit = prompts.find((p) => p.text.includes("<monitor_event"))
+              if (hit) return hit.text
+              yield* Effect.sleep("100 millis")
+            }
+            return yield* Effect.fail(new Error("monitor event never injected"))
+          })
+          expect(event).toContain("ALERT-one")
+          expect(event).toContain("ALERT-two")
+          expect(event).not.toContain("nothing-here")
         }),
       ),
     20_000,
@@ -1423,23 +1475,26 @@ describe("tool.shell truncation", () => {
 
 describe("tool.shell foreground window", () => {
   // The foreground window blocks the whole turn while it elapses; a `timeout`
-  // larger than the 30s auto-promote default must NOT extend it (a model reading
-  // `timeout` as a kill deadline once passed 300000 and froze the turn for 5m).
+  // larger than the 30s auto-promote default must NOT extend it past the
+  // window + kill grace (a model passing 300000 once froze the turn for 5m).
+  // `timeout` itself is the worker's kill deadline; when it lands inside the
+  // window the foreground waits slightly past it (grace) so the settled
+  // result returns synchronously instead of promoting a dying command.
   it.live("defaults to the 30s auto-background window", () =>
     Effect.sync(() => {
       expect(foregroundWindowMs()).toBe(30_000)
     }),
   )
-  it.live("lets a smaller timeout shorten the foreground wait", () =>
+  it.live("waits out a kill deadline inside the window plus the grace", () =>
     Effect.sync(() => {
-      expect(foregroundWindowMs(500)).toBe(500)
-      expect(foregroundWindowMs(5_000)).toBe(5_000)
+      expect(foregroundWindowMs(500)).toBe(5_500)
+      expect(foregroundWindowMs(5_000)).toBe(10_000)
     }),
   )
-  it.live("caps an oversized timeout at the 30s window", () =>
+  it.live("caps the turn-blocking wait near the 30s window for large timeouts", () =>
     Effect.sync(() => {
-      expect(foregroundWindowMs(300_000)).toBe(30_000)
-      expect(foregroundWindowMs(60_000)).toBe(30_000)
+      expect(foregroundWindowMs(300_000)).toBe(35_000)
+      expect(foregroundWindowMs(60_000)).toBe(35_000)
     }),
   )
 })

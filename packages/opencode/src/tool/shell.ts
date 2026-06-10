@@ -1,4 +1,5 @@
 import { Effect, Fiber, Stream, Deferred, Scope } from "effect"
+import stripAnsi from "strip-ansi"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -32,21 +33,35 @@ const POST_EXIT_OUTPUT_IDLE_TIMEOUT = "500 millis"
 // Foreground window: a command still running this long is auto-promoted to the
 // background (handed a bg id) instead of blocking the turn — NOT killed.
 const AUTO_BACKGROUND_MS = 30 * 1000
-// Hard cap on a backgrounded command's total lifetime; killed if it exceeds this.
+// Hard cap on a backgrounded command's total lifetime when the caller gave no
+// explicit `timeout`; killed if it exceeds this.
 const MAX_BACKGROUND_MS = 5 * 60 * 1000
+// Margin the foreground wait adds past a kill deadline that lands inside the
+// window: the kill itself takes up to 3s (forceKillAfter) plus output settle,
+// and waiting it out returns the real result synchronously instead of
+// pointlessly promoting a command that is about to die.
+const KILL_GRACE_MS = 5 * 1000
+// Watch mode: matched lines are collected and injected on this cadence (one
+// injection = one model turn, so batching is load-bearing, not cosmetic)...
+const MONITOR_BATCH_MS = 700
+// ...with at most this many lines per event (older matches in a flood drop)...
+const MONITOR_MAX_LINES = 50
+// ...and the monitor disarms entirely after this many events. The command
+// keeps running; bash_output still reads everything.
+const MONITOR_MAX_EVENTS = 20
 
 // The foreground window before a still-running command auto-backgrounds. The
 // window blocks the WHOLE turn for its full duration (the runLoop is parked
 // awaiting this tool result, so injected completion bubbles and fresh user
-// messages queue unprocessed), so a caller's `timeout` may only SHORTEN it —
-// never extend the turn-blocking wait past AUTO_BACKGROUND_MS. A model that
-// reads `timeout` as the old kill-deadline and passes e.g. 300000 would
-// otherwise freeze the turn for minutes ("failed · 5m00s" then an infinite
-// spinner). Keeping the window ≤30s also holds it strictly below the worker's
-// 5m kill, so a completing command never races the foreground timer at the same
-// instant — completions always inject while the runner is idle.
+// messages queue unprocessed), so it is capped near AUTO_BACKGROUND_MS — a
+// model that passes timeout=300000 must not freeze the turn for minutes.
+// `timeout` itself is the KILL deadline (the worker stops the command there);
+// when that deadline falls inside the window we wait slightly past it
+// (KILL_GRACE_MS) so the settled result returns synchronously rather than
+// promoting a command that is about to die and racing its completion bubble.
 export function foregroundWindowMs(timeout?: number): number {
-  return Math.min(timeout ?? AUTO_BACKGROUND_MS, AUTO_BACKGROUND_MS)
+  if (timeout === undefined) return AUTO_BACKGROUND_MS
+  return Math.min(timeout, AUTO_BACKGROUND_MS) + KILL_GRACE_MS
 }
 
 function formatElapsed(ms: number): string {
@@ -68,13 +83,18 @@ function renderBashBackground(input: {
   exit?: number | null
   text?: string
   durationMs?: number
+  monitor?: string
 }): string {
   const label = attrSafe(input.description)
   if (input.state === "running") {
     return [
       `<terminal_run id="${input.id}" state="running" kind="bash" label="${label}">`,
       `<summary>Command running in background: ${input.description}</summary>`,
-      `<instructions>You will be notified when it exits. Use the bash_output tool with id="${input.id}" to read new output, and bash_kill with id="${input.id}" to stop it.</instructions>`,
+      `<instructions>You will be notified when it exits. Use the bash_output tool with id="${input.id}" to read new output, and bash_kill with id="${input.id}" to stop it.${
+        input.monitor
+          ? ` A monitor is armed: output lines matching /${attrSafe(input.monitor)}/ are pushed to you automatically as <monitor_event> blocks — do NOT poll bash_output for them.`
+          : ""
+      }</instructions>`,
       `</terminal_run>`,
     ].join("\n")
   }
@@ -524,10 +544,11 @@ export const ShellTool = Tool.define(
       }
     })
 
-    // Worker: spawn + capture + race exit vs the 5m hard cap, stamp the
-    // result/exit into the background registry, return the cleaned output string
-    // (which becomes the BackgroundJob's `output`). Runs inside the job's scope,
-    // so it outlives the foreground turn once promoted.
+    // Worker: spawn + capture + race exit vs the kill deadline (the caller's
+    // `timeout` when given, the 5m cap otherwise), stamp the result/exit into
+    // the background registry, return the cleaned output string (which becomes
+    // the BackgroundJob's `output`). Runs inside the job's scope, so it
+    // outlives the foreground turn once promoted.
     const executeCommand = Effect.fn("ShellTool.executeCommand")(function* (
       input: {
         shell: string
@@ -535,6 +556,9 @@ export const ShellTool = Tool.define(
         cwd: string
         env: NodeJS.ProcessEnv
         description: string
+        timeoutMs?: number
+        /** Called once per COMPLETE output line (monitor tap). Must be cheap and sync. */
+        onLine?: (line: string) => void
       },
       ctx: Tool.Context,
       id: string,
@@ -543,6 +567,7 @@ export const ShellTool = Tool.define(
       const keep = limits.maxBytes * 2
       let full = ""
       let last = ""
+      let lineTail = ""
       const list: Chunk[] = []
       let used = 0
       let processed = 0
@@ -616,6 +641,13 @@ export const ShellTool = Tool.define(
               const size = Buffer.byteLength(chunk, "utf-8")
               list.push({ text: chunk, size })
               used += size
+
+              if (input.onLine) {
+                const merged = lineTail + chunk
+                const lines = merged.split("\n")
+                lineTail = lines.pop() ?? ""
+                for (const line of lines) input.onLine(line)
+              }
               while (used > keep && list.length > 1) {
                 const item = list.shift()
                 if (!item) break
@@ -666,7 +698,9 @@ export const ShellTool = Tool.define(
           // No ctx.abort listener here: a backgrounded command must survive the
           // turn ending. Foreground abort is handled by the run wrapper, which
           // cancels the owning job → interrupts this worker → kills the process.
-          const timeout = Effect.sleep(`${MAX_BACKGROUND_MS} millis`)
+          // An explicit `timeout` is the caller's kill deadline; without one the
+          // 5m background cap applies.
+          const timeout = Effect.sleep(`${input.timeoutMs ?? MAX_BACKGROUND_MS} millis`)
 
           const exit = yield* Effect.raceAll([
             handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
@@ -695,12 +729,17 @@ export const ShellTool = Tool.define(
         }),
       ).pipe(Effect.orDie)
 
+      // A final line without a trailing newline still counts for the monitor.
+      if (input.onLine && lineTail) input.onLine(lineTail)
+
       const meta: string[] = []
       if (expired) {
         meta.push(
-          `shell tool terminated the command after exceeding the ${Math.round(
-            MAX_BACKGROUND_MS / 1000,
-          )}s background limit.`,
+          input.timeoutMs !== undefined
+            ? `shell tool stopped the command at the requested ${formatElapsed(input.timeoutMs)} timeout; output up to that point is above.`
+            : `shell tool terminated the command after exceeding the ${Math.round(
+                MAX_BACKGROUND_MS / 1000,
+              )}s background limit.`,
         )
       }
       if (aborted) meta.push("User aborted the command")
@@ -725,9 +764,11 @@ export const ShellTool = Tool.define(
       // Stamp the result into the registry (read by the foreground path for rich
       // metadata, and by the completion-notify), and return the output string —
       // which becomes the BackgroundJob's `output`. A non-zero exit code is a
-      // normal completion (the code rides along in the result/bubble); only an
-      // infrastructure kill (the background limit) is an error.
-      const status: ShellBackground.Status = expired ? "error" : "completed"
+      // normal completion (the code rides along in the result/bubble), and a
+      // kill at the caller's REQUESTED timeout is the deliberate outcome
+      // ("run it for 30s") whose captured output is the payload — only the
+      // implicit background-limit kill is an error.
+      const status: ShellBackground.Status = expired && input.timeoutMs === undefined ? "error" : "completed"
       yield* shellBg.setExit(id, code, status)
       yield* shellBg.setResult(id, {
         output,
@@ -750,6 +791,8 @@ export const ShellTool = Tool.define(
         foregroundWindow: number
         background: boolean
         description: string
+        timeoutMs?: number
+        monitor?: RegExp
       },
       ctx: Tool.Context,
     ) {
@@ -767,8 +810,85 @@ export const ShellTool = Tool.define(
             description: input.description,
             truncated: false,
           },
-          output: renderBashBackground({ id, state: "running", description: input.description }),
+          output: renderBashBackground({
+            id,
+            state: "running",
+            description: input.description,
+            monitor: input.monitor?.source,
+          }),
         }
+      }
+
+      // Monitor tap: the worker calls onLine per complete output line; matches
+      // accumulate here and a pump fiber drains them into synthetic
+      // <monitor_event> injections (one injection = one model turn, so the
+      // batching window and caps are load-bearing). Disarms after
+      // MONITOR_MAX_EVENTS, or immediately on a flood — the command itself
+      // keeps running either way and bash_output still reads everything.
+      let onLine: ((line: string) => void) | undefined
+      let armPump: Effect.Effect<void> | undefined
+      if (input.monitor && ops) {
+        const inject = ops
+        const regex = input.monitor
+        const pending: string[] = []
+        let dropped = 0
+        let disarmed = false
+        onLine = (raw) => {
+          if (disarmed) return
+          const line = stripAnsi(raw)
+          if (!regex.test(line)) return
+          if (pending.length >= MONITOR_MAX_LINES) {
+            pending.shift()
+            dropped++
+          }
+          pending.push(line)
+        }
+        armPump = Effect.gen(function* () {
+          let events = 0
+          while (true) {
+            yield* Effect.sleep(`${MONITOR_BATCH_MS} millis`)
+            const job = yield* background.get(id)
+            const settled = !job || job.status !== "running"
+            if (pending.length === 0) {
+              if (settled) return
+              continue
+            }
+            const lines = pending.splice(0, pending.length)
+            const omitted = dropped
+            dropped = 0
+            events++
+            // Flood: a single batch window overflowing the line cap means the
+            // pattern matches more or less everything — disarm now with advice
+            // instead of burning the remaining event budget on noise.
+            const flooded = omitted > 0
+            const last = flooded || events >= MONITOR_MAX_EVENTS || settled
+            if (last) disarmed = true
+            const text = [
+              "",
+              `<monitor_event id="${id}" label="${attrSafe(input.description)}"${last ? ` final="true"` : ""}>`,
+              ...(omitted > 0 ? [`(${omitted} earlier matching lines omitted)`] : []),
+              ...lines,
+              ...(flooded
+                ? [
+                    `(monitor disarmed: the pattern floods — it matched ${lines.length + omitted}+ lines in one batch window. Restart the watch with a tighter regex, or read output with bash_output id="${id}".)`,
+                  ]
+                : events >= MONITOR_MAX_EVENTS && !settled
+                  ? [
+                      `(monitor disarmed after ${MONITOR_MAX_EVENTS} events — the command keeps running; read further output with bash_output id="${id}".)`,
+                    ]
+                  : []),
+              `</monitor_event>`,
+            ].join("\n")
+            yield* inject
+              .prompt({
+                sessionID: ctx.sessionID,
+                agent: ctx.agent,
+                parts: [{ type: "text", synthetic: true, text }],
+              })
+              .pipe(Effect.ignore)
+            if (last) return
+          }
+        }).pipe(Effect.forkIn(toolScope, { startImmediately: true }), Effect.asVoid)
       }
 
       // Inject the ▣ completion bubble when the job settles. Forked into toolScope
@@ -829,11 +949,20 @@ export const ShellTool = Tool.define(
         metadata: { description: input.description, sessionId: ctx.sessionID },
         onPromote: Effect.void,
         run: executeCommand(
-          { shell: input.shell, command: input.command, cwd: input.cwd, env: input.env, description: input.description },
+          {
+            shell: input.shell,
+            command: input.command,
+            cwd: input.cwd,
+            env: input.env,
+            description: input.description,
+            timeoutMs: input.timeoutMs,
+            onLine,
+          },
           ctx,
           id,
         ),
       })
+      if (armPump) yield* armPump
 
       if (input.background) {
         yield* notify()
@@ -918,9 +1047,18 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              // `timeout` is the FOREGROUND window before auto-promote (default
-              // 30s, capped at 30s), NOT a kill deadline — see foregroundWindowMs.
-              // The 5m hard cap lives in the worker.
+              let monitor: RegExp | undefined
+              if (params.monitor !== undefined) {
+                try {
+                  monitor = new RegExp(params.monitor)
+                } catch (e) {
+                  throw new Error(`Invalid monitor regex: ${e instanceof Error ? e.message : String(e)}`)
+                }
+              }
+              // `timeout` is the kill deadline the worker enforces; the
+              // turn-blocking foreground wait is capped near 30s regardless —
+              // see foregroundWindowMs. Without a timeout the worker applies
+              // the 5m background cap.
               const foregroundWindow = foregroundWindowMs(params.timeout)
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
@@ -941,8 +1079,11 @@ export const ShellTool = Tool.define(
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
                   foregroundWindow,
-                  background: params.background === true,
+                  // A watch is by definition long-lived: monitor implies background.
+                  background: params.background === true || monitor !== undefined,
                   description: params.description,
+                  timeoutMs: params.timeout,
+                  monitor,
                 },
                 ctx,
               )

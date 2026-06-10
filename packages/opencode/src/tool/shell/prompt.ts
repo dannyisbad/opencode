@@ -28,7 +28,11 @@ export function parameterSchema(description: string) {
     }),
     timeout: Schema.optional(PositiveInt).annotate({
       description:
-        "How long (ms) to stay in the foreground before auto-backgrounding. The command is NOT killed at this point — it keeps running in the background and you are handed a background id. Defaults to 30000ms and is CAPPED at 30000ms: a larger value cannot extend the foreground wait (use it only to shorten it for commands you expect to be quick). Anything still running at the window auto-backgrounds and notifies you on exit, so set `background: true` up front for work you know will block.",
+        "Kill deadline (ms): the command is stopped at this point and its output up to then is returned as a normal completed result — use it for 'run X for N seconds' work. Omit it to let the command run to completion (backgrounded commands are capped at 5 minutes). Note the foreground wait is capped near 30s regardless: a command still running then continues in the background and you are notified on exit, so set `background: true` up front for work you know will block.",
+    }),
+    monitor: Schema.optional(Schema.String).annotate({
+      description:
+        'Watch mode: a regex tested against each output line (ANSI codes stripped); matching lines are PUSHED to you automatically as <monitor_event> blocks (batched, capped at 20 events, auto-disarmed if the pattern floods). Use this for "tell me when X happens" watches — errors in a dev server log, a build finishing — instead of polling bash_output. Implies background mode. Combine with `timeout` to bound the watch. Plain regex against the line; no shell pipeline filtering (grep / --line-buffered) needed. Cover every outcome you care about, not just the happy path — a watch that only matches the success marker stays silent through a crash, so prefer alternations like "Ready in|error|Exception|FAILED".',
     }),
     workdir: Schema.optional(Schema.String).annotate({
       description: `The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.`,
@@ -109,7 +113,7 @@ function bashCommandSection(chain: string, limits: Limits, defaultTimeoutMs: num
 
 Usage notes:
   - The command argument is required.
-  - The optional \`timeout\` (ms) is how long the command stays in the FOREGROUND before auto-backgrounding — it does NOT kill the command. It defaults to 30000ms and is capped at 30000ms (it can only shorten the foreground wait, not extend it). A command still running at the window keeps going in the background and notifies you on exit; set \`background: true\` up front for work you expect to block.
+  - The optional \`timeout\` (ms) is a KILL deadline: the command is stopped at that point and its output up to then is returned as a normal completed result — use it for "run X for N seconds" work. Omit it to let the command run to completion (backgrounded commands are capped at 5 minutes). The foreground wait is capped near 30s regardless of \`timeout\`: a command still running then keeps going in the background and notifies you on exit, so set \`background: true\` up front for work you expect to block.
   - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
   - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
 
@@ -161,7 +165,7 @@ Before executing the command, please follow these steps:
 
 Usage notes:
   - The command argument is required.
-  - The optional \`timeout\` (ms) is how long the command stays in the FOREGROUND before auto-backgrounding — it does NOT kill the command. It defaults to 30000ms and is capped at 30000ms (it can only shorten the foreground wait, not extend it). A command still running at the window keeps going in the background and notifies you on exit; set \`background: true\` up front for work you expect to block.
+  - The optional \`timeout\` (ms) is a KILL deadline: the command is stopped at that point and its output up to then is returned as a normal completed result — use it for "run X for N seconds" work. Omit it to let the command run to completion (backgrounded commands are capped at 5 minutes). The foreground wait is capped near 30s regardless of \`timeout\`: a command still running then keeps going in the background and notifies you on exit, so set \`background: true\` up front for work you expect to block.
   - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
   - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`Select-Object -First\`, \`Select-Object -Last\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
 
@@ -211,7 +215,7 @@ Before executing the command, please follow these steps:
 
 Usage notes:
   - The command argument is required.
-  - The optional \`timeout\` (ms) is how long the command stays in the FOREGROUND before auto-backgrounding — it does NOT kill the command. It defaults to 30000ms and is capped at 30000ms (it can only shorten the foreground wait, not extend it). A command still running at the window keeps going in the background and notifies you on exit; set \`background: true\` up front for work you expect to block.
+  - The optional \`timeout\` (ms) is a KILL deadline: the command is stopped at that point and its output up to then is returned as a normal completed result — use it for "run X for N seconds" work. Omit it to let the command run to completion (backgrounded commands are capped at 5 minutes). The foreground wait is capped near 30s regardless of \`timeout\`: a command still running then keeps going in the background and notifies you on exit, so set \`background: true\` up front for work you expect to block.
   - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
   - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`more\` or other pagination commands to limit output; the full output will already be captured to a file for more precise searching.
 
