@@ -6,6 +6,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Database } from "@opencode-ai/core/database/database"
 import { Auth } from "@/auth"
 import { Account } from "@/account/account"
+import { Automation } from "@/automation/automation"
 import { Config } from "@/config/config"
 import { Git } from "@/git"
 import { Ripgrep } from "@opencode-ai/core/filesystem/ripgrep"
@@ -60,6 +61,7 @@ export const AppLayer = Layer.mergeAll(
   Database.defaultLayer,
   Auth.defaultLayer,
   Account.defaultLayer,
+  Automation.defaultLayer,
   Config.defaultLayer,
   Git.defaultLayer,
   Ripgrep.defaultLayer,

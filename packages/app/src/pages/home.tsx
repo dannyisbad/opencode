@@ -308,6 +308,16 @@ function HomeDesign() {
       .forEach((directory) => notification.project.markViewed(directory))
   }
 
+  function openNewAutomation() {
+    const conn = focusedServer()
+    const project = newSessionProject()
+    if (!conn || !project) return
+    const ctx = global.createServerCtx(conn)
+    ctx.projects.open(project.worktree)
+    ctx.projects.touch(project.worktree)
+    navigateOnServer(conn, `/${base64Encode(project.worktree)}/automations?new=1`)
+  }
+
   function openSession(session: Session) {
     const project = projectForSession(session, projects(), projectByID())
     const conn = focusedServer()
@@ -403,6 +413,7 @@ function HomeDesign() {
                       <HomeSessionGroupHeader
                         title={language.t("home.sessions.empty")}
                         onNewSession={newSessionProject() ? openNewSession : undefined}
+                        onNewAutomation={newSessionProject() ? openNewAutomation : undefined}
                       />
                     </div>
                   }
@@ -413,6 +424,7 @@ function HomeDesign() {
                         <HomeSessionGroupHeader
                           title={group.title}
                           onNewSession={index() === 0 && newSessionProject() ? openNewSession : undefined}
+                          onNewAutomation={index() === 0 && newSessionProject() ? openNewAutomation : undefined}
                         />
                         <div class="flex min-w-0 flex-col gap-px">
                           <For each={group.sessions}>
@@ -1087,25 +1099,41 @@ function HomeSessionSearchResultRow(props: {
   )
 }
 
-function HomeSessionGroupHeader(props: { title: string; onNewSession?: () => void }) {
+function HomeSessionGroupHeader(props: { title: string; onNewSession?: () => void; onNewAutomation?: () => void }) {
   const language = useLanguage()
   return (
-    <div class="flex h-7 min-w-0 items-center justify-between pl-4 pr-2">
+    <div class="flex h-7 min-w-0 items-center justify-between gap-3 pl-4 pr-2">
       <div class={HOME_SECTION_LABEL}>{props.title}</div>
-      <Show when={props.onNewSession}>
-        {(onNewSession) => (
-          <ButtonV2
-            data-action="home-new-session"
-            variant="ghost-muted"
-            size="normal"
-            icon="edit"
-            class="h-7 px-2 [font-weight:530]"
-            onClick={onNewSession()}
-          >
-            {language.t("command.session.new")}
-          </ButtonV2>
-        )}
-      </Show>
+      <div class="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+        <Show when={props.onNewSession}>
+          {(onNewSession) => (
+            <ButtonV2
+              data-action="home-new-session"
+              variant="ghost-muted"
+              size="normal"
+              icon="edit"
+              class="h-7 px-2 [font-weight:530]"
+              onClick={onNewSession()}
+            >
+              {language.t("command.session.new")}
+            </ButtonV2>
+          )}
+        </Show>
+        <Show when={props.onNewAutomation}>
+          {(onNewAutomation) => (
+            <ButtonV2
+              data-action="home-new-automation"
+              variant="ghost-muted"
+              size="normal"
+              icon="plus"
+              class="h-7 px-2 [font-weight:530]"
+              onClick={onNewAutomation()}
+            >
+              New Automation
+            </ButtonV2>
+          )}
+        </Show>
+      </div>
     </div>
   )
 }

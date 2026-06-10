@@ -32,6 +32,7 @@ import {
   workspaceRoutingLayer,
 } from "../../src/server/routes/instance/httpapi/middleware/workspace-routing"
 import { resetDatabase } from "../fixture/db"
+import { noopAutomationLayer } from "../fixture/automation"
 import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
 import { workspaceLayerWithRuntimeFlags } from "../fixture/workspace"
 import { testEffect } from "../lib/effect"
@@ -62,7 +63,7 @@ const it = testEffect(
 )
 
 const instanceContextTestLayer = Layer.mergeAll(
-  instanceContextLayer,
+  instanceContextLayer.pipe(Layer.provide(noopAutomationLayer)),
   workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal)),
 )
 

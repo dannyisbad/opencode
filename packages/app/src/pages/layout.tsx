@@ -1029,6 +1029,17 @@ export default function Layout(props: ParentProps) {
         onSelect: () => chooseProject(),
       },
       {
+        id: "automation.open",
+        title: "Automations",
+        category: language.t("command.category.project"),
+        disabled: !currentProject() && !currentDir(),
+        onSelect: () => {
+          const directory = currentProject()?.worktree ?? currentDir()
+          if (!directory) return
+          navigateWithSidebarReset(`/${base64Encode(directory)}/automations`)
+        },
+      },
+      {
         id: "project.previous",
         title: language.t("command.project.previous"),
         category: language.t("command.category.project"),
@@ -2028,6 +2039,9 @@ export default function Layout(props: ParentProps) {
       setState("hoverProject", hoverOpen ? worktree : undefined)
     },
     navigateToProject,
+    navigateToProjectAutomations: (directory) => {
+      navigateWithSidebarReset(`/${base64Encode(directory)}/automations`)
+    },
     openSidebar: () => layout.sidebar.open(),
     closeProject,
     showEditProjectDialog: (proj) => showEditProjectDialog(server.current!, proj),
@@ -2089,6 +2103,12 @@ export default function Layout(props: ParentProps) {
       return item.vcs === "git" || layout.sidebar.workspaces(item.worktree)()
     })
     const homedir = createMemo(() => serverSync.data.path.home)
+    const automationsActive = createMemo(() => /\/automations(?:\/|$)/.test(location.pathname))
+    const openAutomations = () => {
+      const dir = worktree()
+      if (!dir) return
+      navigateWithSidebarReset(`/${base64Encode(dir)}/automations`)
+    }
 
     return (
       <div
@@ -2183,6 +2203,13 @@ export default function Layout(props: ParentProps) {
                           <DropdownMenu.ItemLabel>{language.t("common.edit")}</DropdownMenu.ItemLabel>
                         </DropdownMenu.Item>
                         <DropdownMenu.Item
+                          data-action="project-automations"
+                          data-project={slug()}
+                          onSelect={openAutomations}
+                        >
+                          <DropdownMenu.ItemLabel>Automations</DropdownMenu.ItemLabel>
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item
                           data-action="project-workspaces-toggle"
                           data-project={slug()}
                           disabled={!canToggle()}
@@ -2229,7 +2256,7 @@ export default function Layout(props: ParentProps) {
                   when={workspacesEnabled()}
                   fallback={
                     <>
-                      <div class="shrink-0 py-4">
+                      <div class="shrink-0 py-4 flex flex-col gap-2">
                         <Button
                           size="large"
                           icon="new-session"
@@ -2241,6 +2268,15 @@ export default function Layout(props: ParentProps) {
                           }}
                         >
                           {language.t("command.session.new")}
+                        </Button>
+                        <Button
+                          size="large"
+                          icon="checklist"
+                          variant={automationsActive() ? "secondary" : "ghost"}
+                          class="w-full"
+                          onClick={openAutomations}
+                        >
+                          Automations
                         </Button>
                       </div>
                       <div class="flex-1 min-h-0">
@@ -2255,7 +2291,7 @@ export default function Layout(props: ParentProps) {
                   }
                 >
                   <>
-                    <div class="shrink-0 py-4">
+                    <div class="shrink-0 py-4 flex flex-col gap-2">
                       <Button
                         size="large"
                         icon="plus-small"
@@ -2265,6 +2301,15 @@ export default function Layout(props: ParentProps) {
                         }}
                       >
                         {language.t("workspace.new")}
+                      </Button>
+                      <Button
+                        size="large"
+                        icon="checklist"
+                        variant={automationsActive() ? "secondary" : "ghost"}
+                        class="w-full"
+                        onClick={openAutomations}
+                      >
+                        Automations
                       </Button>
                     </div>
                     <div class="relative flex-1 min-h-0">

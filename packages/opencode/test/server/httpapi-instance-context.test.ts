@@ -27,6 +27,7 @@ import {
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
 import { withFixedWorkspaceID } from "../fixture/flag"
+import { noopAutomationLayer } from "../fixture/automation"
 import { workspaceLayerWithRuntimeFlags } from "../fixture/workspace"
 import { waitGlobalBusEvent } from "./global-bus"
 import { testEffect } from "../lib/effect"
@@ -57,7 +58,7 @@ const it = testEffect(
 )
 
 const instanceContextTestLayer = Layer.mergeAll(
-  instanceContextLayer,
+  instanceContextLayer.pipe(Layer.provide(noopAutomationLayer)),
   workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal)),
 )
 
