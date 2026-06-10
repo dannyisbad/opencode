@@ -35,6 +35,20 @@ const AUTO_BACKGROUND_MS = 30 * 1000
 // Hard cap on a backgrounded command's total lifetime; killed if it exceeds this.
 const MAX_BACKGROUND_MS = 5 * 60 * 1000
 
+// The foreground window before a still-running command auto-backgrounds. The
+// window blocks the WHOLE turn for its full duration (the runLoop is parked
+// awaiting this tool result, so injected completion bubbles and fresh user
+// messages queue unprocessed), so a caller's `timeout` may only SHORTEN it —
+// never extend the turn-blocking wait past AUTO_BACKGROUND_MS. A model that
+// reads `timeout` as the old kill-deadline and passes e.g. 300000 would
+// otherwise freeze the turn for minutes ("failed · 5m00s" then an infinite
+// spinner). Keeping the window ≤30s also holds it strictly below the worker's
+// 5m kill, so a completing command never races the foreground timer at the same
+// instant — completions always inject while the runner is idle.
+export function foregroundWindowMs(timeout?: number): number {
+  return Math.min(timeout ?? AUTO_BACKGROUND_MS, AUTO_BACKGROUND_MS)
+}
+
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000))
   if (total < 60) return `${total}s`
@@ -904,9 +918,10 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              // `timeout` now means the FOREGROUND window before auto-promote
-              // (default 30s), NOT a kill deadline. The 5m hard cap lives in the worker.
-              const foregroundWindow = params.timeout ?? AUTO_BACKGROUND_MS
+              // `timeout` is the FOREGROUND window before auto-promote (default
+              // 30s, capped at 30s), NOT a kill deadline — see foregroundWindowMs.
+              // The 5m hard cap lives in the worker.
+              const foregroundWindow = foregroundWindowMs(params.timeout)
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {

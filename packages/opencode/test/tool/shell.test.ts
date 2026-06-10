@@ -6,7 +6,7 @@ import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "../../src/shell/shell"
-import { ShellTool } from "../../src/tool/shell"
+import { ShellTool, foregroundWindowMs } from "../../src/tool/shell"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
@@ -1418,5 +1418,28 @@ describe("tool.shell truncation", () => {
         expect(saved.length).toBe(byteCount)
       }),
     ),
+  )
+})
+
+describe("tool.shell foreground window", () => {
+  // The foreground window blocks the whole turn while it elapses; a `timeout`
+  // larger than the 30s auto-promote default must NOT extend it (a model reading
+  // `timeout` as a kill deadline once passed 300000 and froze the turn for 5m).
+  it.live("defaults to the 30s auto-background window", () =>
+    Effect.sync(() => {
+      expect(foregroundWindowMs()).toBe(30_000)
+    }),
+  )
+  it.live("lets a smaller timeout shorten the foreground wait", () =>
+    Effect.sync(() => {
+      expect(foregroundWindowMs(500)).toBe(500)
+      expect(foregroundWindowMs(5_000)).toBe(5_000)
+    }),
+  )
+  it.live("caps an oversized timeout at the 30s window", () =>
+    Effect.sync(() => {
+      expect(foregroundWindowMs(300_000)).toBe(30_000)
+      expect(foregroundWindowMs(60_000)).toBe(30_000)
+    }),
   )
 })
