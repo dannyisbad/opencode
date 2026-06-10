@@ -14,6 +14,7 @@ import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
+import * as ShellBackground from "@/tool/shell/background"
 import { Automation } from "@/automation/automation"
 import { Config } from "@/config/config"
 import { Command } from "@/command"
@@ -223,6 +224,9 @@ export function createRoutes(
       Auth.defaultLayer,
       Automation.defaultLayer,
       BackgroundJob.defaultLayer,
+      // Same memoized layer instance the bash tool builds its registry from
+      // (global memoMap), so handlers observe the tool's live entries.
+      ShellBackground.defaultLayer,
       Command.defaultLayer,
       Config.defaultLayer,
       Format.defaultLayer,

@@ -14,6 +14,7 @@ import {
   WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
+import { ApiNotFoundError } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -56,6 +57,27 @@ export const ToolListQuery = Schema.Struct({
   model: ModelV2.ID,
 })
 
+// Background shell command observation (the bash tool's backgrounded
+// commands): identity/status from the BackgroundJob registry joined with the
+// live capture state in the ShellBackground registry. `output` returns the
+// CURRENT capture window via its own offset — it never touches the
+// bash_output read cursor the model uses.
+const ShellCommandStatus = Schema.Literals(["running", "completed", "error", "killed"])
+const ShellCommandInfo = Schema.Struct({
+  id: Schema.String,
+  description: Schema.String,
+  command: Schema.String,
+  status: ShellCommandStatus,
+  exit: Schema.NullOr(Schema.Number),
+  started_at: Schema.Number,
+  completed_at: Schema.optionalKey(Schema.Number),
+}).annotate({ identifier: "ShellCommandInfo" })
+const ShellCommandList = Schema.Array(ShellCommandInfo)
+const ShellCommandOutput = Schema.Struct({
+  ...ShellCommandInfo.fields,
+  text: Schema.String,
+}).annotate({ identifier: "ShellCommandOutput" })
+
 const WorktreeList = Schema.Array(Schema.String)
 const WorktreeErrorName = Schema.Union([
   Schema.Literal("WorktreeNotGitError"),
@@ -93,6 +115,9 @@ export const ExperimentalPaths = {
   worktreeReset: "/experimental/worktree/reset",
   session: "/experimental/session",
   sessionBackground: "/experimental/session/:sessionID/background",
+  sessionShell: "/experimental/session/:sessionID/shell",
+  shellOutput: "/experimental/shell/:id/output",
+  shellKill: "/experimental/shell/:id/kill",
   resource: "/experimental/resource",
 } as const
 
@@ -228,6 +253,41 @@ export const ExperimentalApi = HttpApi.make("experimental")
             summary: "Background subagents",
             description:
               "Detach any synchronous subagents currently blocking the session and continue them in the background.",
+          }),
+        ),
+        HttpApiEndpoint.get("sessionShell", ExperimentalPaths.sessionShell, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(ShellCommandList, "Background shell commands for the session"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.shell",
+            summary: "List background shell commands",
+            description: "List the bash tool's background commands for a session with their live status.",
+          }),
+        ),
+        HttpApiEndpoint.get("shellOutput", ExperimentalPaths.shellOutput, {
+          params: { id: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(ShellCommandOutput, "Current captured output of a background shell command"),
+          error: ApiNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.shell.output",
+            summary: "Read background shell output",
+            description:
+              "Read the current captured output window of a background shell command without disturbing the model's bash_output cursor.",
+          }),
+        ),
+        HttpApiEndpoint.post("shellKill", ExperimentalPaths.shellKill, {
+          params: { id: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Whether the command was known"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.shell.kill",
+            summary: "Kill background shell command",
+            description: "Stop a running background shell command.",
           }),
         ),
         HttpApiEndpoint.get("resource", ExperimentalPaths.resource, {

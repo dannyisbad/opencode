@@ -9,13 +9,23 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { AccountV2 } from "@opencode-ai/core/account"
 import { AccountTable } from "@opencode-ai/core/account/sql"
+import { BackgroundJob } from "@/background/job"
+import * as ShellBackground from "@/tool/shell/background"
 import { Worktree } from "../../src/worktree"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
-const it = testEffect(Layer.mergeAll(Session.defaultLayer, Database.defaultLayer, httpApiLayer))
+const it = testEffect(
+  Layer.mergeAll(
+    Session.defaultLayer,
+    Database.defaultLayer,
+    BackgroundJob.defaultLayer,
+    ShellBackground.defaultLayer,
+    httpApiLayer,
+  ),
+)
 const testWorktreeMutations = process.platform === "win32" ? it.instance.skip : it.instance
 
 function request(path: string, directory: string, init: RequestInit = {}) {
@@ -264,6 +274,74 @@ describe("experimental HttpApi", () => {
         expect((yield* json<Session.GlobalInfo[]>(next)).map((session) => session.id)).toContain(first.id)
       }),
     { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "serves background shell observation routes against the live tool registries",
+    () =>
+      Effect.gen(function* () {
+        const tmp = yield* TestInstance
+        const session = yield* createSession({ title: "shell-routes" })
+        const background = yield* BackgroundJob.Service
+        const shellBg = yield* ShellBackground.Service
+
+        // Simulate what the bash tool does when it backgrounds a command: a
+        // running job carrying the owning sessionId plus a registry entry whose
+        // snapshot serves the live capture buffer. The handlers must see these
+        // exact instances (shared memoMap), not freshly-built empty registries.
+        const id = "bash_test_route"
+        yield* background.start({
+          id,
+          type: "bash",
+          title: "Emit greetings",
+          metadata: { description: "Emit greetings", sessionId: session.id },
+          run: Effect.never,
+        })
+        yield* shellBg.register({
+          id,
+          command: "echo hello",
+          description: "Emit greetings",
+          snapshot: () => "hello from the buffer",
+          readCursor: 0,
+          exitCode: null,
+          status: "running",
+          startedAt: Date.now(),
+          kill: background.cancel(id).pipe(Effect.asVoid, Effect.ignore),
+        })
+
+        const listPath = ExperimentalPaths.sessionShell.replace(":sessionID", session.id)
+        const listed = yield* request(listPath, tmp.directory)
+        expect(listed.status).toBe(200)
+        expect(yield* json(listed)).toEqual([
+          expect.objectContaining({
+            id,
+            description: "Emit greetings",
+            command: "echo hello",
+            status: "running",
+            exit: null,
+          }),
+        ])
+
+        const output = yield* request(ExperimentalPaths.shellOutput.replace(":id", id), tmp.directory)
+        expect(output.status).toBe(200)
+        expect(yield* json(output)).toEqual(
+          expect.objectContaining({ id, status: "running", text: "hello from the buffer" }),
+        )
+
+        const missing = yield* request(ExperimentalPaths.shellOutput.replace(":id", "bash_unknown"), tmp.directory)
+        expect(missing.status).toBe(404)
+
+        const killed = yield* request(ExperimentalPaths.shellKill.replace(":id", id), tmp.directory, {
+          method: "POST",
+        })
+        expect(killed.status).toBe(200)
+        expect(yield* json(killed)).toBe(true)
+
+        const after = yield* request(listPath, tmp.directory)
+        expect(after.status).toBe(200)
+        expect(yield* json(after)).toEqual([expect.objectContaining({ id, status: "killed" })])
+      }),
+    { config: { formatter: false, lsp: false } },
   )
 
   testWorktreeMutations(

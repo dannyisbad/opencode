@@ -1,6 +1,7 @@
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { BackgroundJob } from "@/background/job"
+import * as ShellBackground from "@/tool/shell/background"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -15,6 +16,7 @@ import { Effect, Option } from "effect"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
+import { notFound } from "../errors"
 import { ConsoleSwitchPayload, SessionListQuery, ToolListQuery, WorktreeApiError } from "../groups/experimental"
 
 function mapWorktreeError<A, R>(self: Effect.Effect<A, Worktree.Error, R>) {
@@ -34,6 +36,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
     const worktreeSvc = yield* Worktree.Service
     const sessions = yield* Session.Service
     const background = yield* BackgroundJob.Service
+    const shellBg = yield* ShellBackground.Service
     const flags = yield* RuntimeFlags.Service
 
     const getConsole = Effect.fn("ExperimentalHttpApi.console")(function* () {
@@ -169,6 +172,67 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       return promoted.some((job) => job !== undefined)
     })
 
+    // The job registry settles first on user-driven kills (cancel interrupts
+    // the worker before it can stamp an exit), so a terminal job status
+    // overrides a registry entry still claiming "running".
+    function mergeShellStatus(
+      jobStatus: BackgroundJob.Status,
+      entryStatus: ShellBackground.Status | undefined,
+    ): ShellBackground.Status {
+      if (jobStatus === "running") return entryStatus ?? "running"
+      if (entryStatus && entryStatus !== "running") return entryStatus
+      if (jobStatus === "completed") return "completed"
+      if (jobStatus === "cancelled") return "killed"
+      return "error"
+    }
+
+    const shellInfo = (job: BackgroundJob.Info, entry: ShellBackground.Entry | undefined) => ({
+      id: job.id,
+      description: entry?.description ?? job.title ?? "",
+      command: entry?.command ?? "",
+      status: mergeShellStatus(job.status, entry?.status),
+      exit: entry?.result?.exit ?? entry?.exitCode ?? null,
+      started_at: job.started_at,
+      ...(job.completed_at !== undefined ? { completed_at: job.completed_at } : {}),
+    })
+
+    const sessionShell = Effect.fn("ExperimentalHttpApi.sessionShell")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      const jobs = (yield* background.list()).filter(
+        (job) => job.type === "bash" && job.metadata?.sessionId === ctx.params.sessionID,
+      )
+      return yield* Effect.forEach(
+        jobs,
+        Effect.fnUntraced(function* (job) {
+          return shellInfo(job, yield* shellBg.get(job.id))
+        }),
+      )
+    })
+
+    const shellOutput = Effect.fn("ExperimentalHttpApi.shellOutput")(function* (ctx: { params: { id: string } }) {
+      const [entry, job] = yield* Effect.all([shellBg.get(ctx.params.id), background.get(ctx.params.id)])
+      if (!entry) return yield* Effect.fail(notFound(`no background command with id ${ctx.params.id}`))
+      const info = job
+        ? shellInfo(job, entry)
+        : {
+            id: entry.id,
+            description: entry.description,
+            command: entry.command,
+            status: entry.status,
+            exit: entry.result?.exit ?? entry.exitCode ?? null,
+            started_at: entry.startedAt,
+          }
+      // The live capture window (already byte-bounded by the worker), read at
+      // its own offset — never through readNew, whose cursor belongs to the
+      // model's bash_output tool.
+      return { ...info, text: entry.snapshot() }
+    })
+
+    const shellKill = Effect.fn("ExperimentalHttpApi.shellKill")(function* (ctx: { params: { id: string } }) {
+      return yield* shellBg.kill(ctx.params.id)
+    })
+
     const resource = Effect.fn("ExperimentalHttpApi.resource")(function* () {
       return yield* mcp.resources()
     })
@@ -185,6 +249,9 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("worktreeReset", worktreeReset)
       .handle("session", session)
       .handle("sessionBackground", sessionBackground)
+      .handle("sessionShell", sessionShell)
+      .handle("shellOutput", shellOutput)
+      .handle("shellKill", shellKill)
       .handle("resource", resource)
   }),
 )
