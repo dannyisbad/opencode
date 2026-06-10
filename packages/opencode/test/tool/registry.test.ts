@@ -93,6 +93,32 @@ describe("tool.registry", () => {
     }),
   )
 
+  it.instance("exposes the terminal PTY only to code-capable models", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agent = yield* Agent.Service
+      const build = yield* agent.get("build")
+      if (!build) throw new Error("build agent not found")
+
+      // Weak/unknown model: exactly one shell tool (bash), no PTY to coin-flip into.
+      const weak = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: build,
+      })
+      expect(weak.map((tool) => tool.id)).not.toContain("terminal")
+      expect(weak.map((tool) => tool.id)).toContain("bash")
+
+      // Code-capable fleet model: PTY available.
+      const capable = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("claude-sonnet-4-6"),
+        agent: build,
+      })
+      expect(capable.map((tool) => tool.id)).toContain("terminal")
+    }),
+  )
+
   it.instance("loads tools from .opencode/tool (singular)", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

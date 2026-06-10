@@ -59,6 +59,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Workflow } from "@/workflow/workflow"
+import { Capability } from "@/workflow/capability"
 import { WorkflowTool } from "./workflow"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
@@ -319,9 +320,23 @@ export const layer = Layer.effect(
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+      const cfg = yield* config.get()
       const filtered = (yield* all()).filter((tool) => {
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
+        }
+
+        // `terminal` (interactive PTY) overlaps `bash` enough that weak models
+        // coin-flip between them — and the PTY is the wrong pick for almost
+        // everything bash can do, especially now that bash covers long-running
+        // work via background/monitor. Expose the PTY only to models from the
+        // code-capable fleet (same allowlist the workflow planner routes on);
+        // everything below sees exactly one shell tool.
+        if (tool.id === TerminalTool.id) {
+          return Capability.isCodeCapable(
+            { providerID: input.providerID, modelID: input.modelID },
+            cfg.dynamic_workflows?.code_capable_models,
+          )
         }
 
         const usePatch =
