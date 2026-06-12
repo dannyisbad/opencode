@@ -30,6 +30,9 @@ export type FileDiff = typeof FileDiff.Type
 
 const prune = "7.days"
 const limit = 2 * 1024 * 1024
+// Past this, skip the untracked set instead of running check-ignore + stat + hash
+// over every path on every turn, which blocks track() before the stream starts.
+const untrackedLimit = 10_000
 const core = ["-c", "core.longpaths=true", "-c", "core.symlinks=true"]
 const cfg = ["-c", "core.autocrlf=false", ...core]
 const quote = [...cfg, "-c", "core.quotepath=false"]
@@ -255,7 +258,17 @@ export const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Serv
           }
 
           const tracked = diff.text.split("\0").filter(Boolean)
-          const untracked = other.text.split("\0").filter(Boolean)
+          let untracked = other.text.split("\0").filter(Boolean)
+          // Drop a flooded untracked set rather than hang on it; tracked edits below
+          // still snapshot for /undo.
+          if (untracked.length > untrackedLimit) {
+            yield* Effect.logWarning("untracked file count over snapshot limit, skipping untracked files", {
+              count: untracked.length,
+              limit: untrackedLimit,
+              directory: state.directory,
+            })
+            untracked = []
+          }
           const all = Array.from(new Set([...tracked, ...untracked]))
           if (!all.length) return
 

@@ -218,6 +218,25 @@ it.instance(
 )
 
 it.instance(
+  "huge untracked sets are skipped but tracked edits still snapshot",
+  withTrackedSnapshot(({ tmp, snapshot, before }) =>
+    Effect.gen(function* () {
+      // A tracked edit must survive even when >10k untracked files flood the tree.
+      yield* write(`${tmp.path}/a.txt`, "tracked modification")
+      yield* mkdirp(`${tmp.path}/flood`)
+      yield* Effect.all(
+        Array.from({ length: 10_001 }, (_, i) => write(`${tmp.path}/flood/f${i}.txt`, `${i}`)),
+        { concurrency: "unbounded" },
+      )
+      const patch = yield* snapshot.patch(before)
+      expect(patch.files).toContain(fwd(tmp.path, "a.txt"))
+      expect(patch.files.some((f) => f.includes("/flood/"))).toBe(false)
+    }),
+  ),
+  { git: true },
+)
+
+it.instance(
   "nested directory revert",
   withTrackedSnapshot(({ tmp, snapshot, before }) =>
     Effect.gen(function* () {
