@@ -1,3 +1,9 @@
+// Register the `spinner` intrinsic at TUI entry, before any render. A bare
+// side-effect import gets tree-shaken out of the minified bundle despite the
+// package's sideEffects flag, so call the registrar explicitly — a used import
+// the bundler cannot drop.
+import { registerSpinner } from "opentui-spinner/solid"
+registerSpinner()
 import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
