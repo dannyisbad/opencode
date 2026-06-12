@@ -29,6 +29,12 @@ import { filesystem, path } from "./effect/layer-node-platform"
 
 const toError = (err: unknown): Error => (err instanceof globalThis.Error ? err : new globalThis.Error(String(err)))
 
+// terminate() without an explicit forceKillAfter used to await `closed` forever.
+// On scope teardown that hangs disposeAllInstances (and process exit) whenever a
+// surviving descendant keeps inherited stdio open, so default a grace: signal,
+// wait this long, then SIGKILL and give up. Kept under the 5s shutdown budget.
+const DEFAULT_FORCE_KILL_AFTER = "2 seconds"
+
 const toTag = (err: NodeJS.ErrnoException): PlatformError.SystemErrorTag => {
   switch (err.code) {
     case "ENOENT":
@@ -334,8 +340,7 @@ export const make = Effect.gen(function* () {
     const sig = opts?.killSignal ?? "SIGTERM"
     const send = (s: NodeJS.Signals) => Effect.catch(killGroup(command, proc, s), () => killOne(command, proc, s))
     const attempt = send(sig).pipe(Effect.andThen(Deferred.await(closed)), Effect.asVoid)
-    const grace = opts?.forceKillAfter
-    if (!grace) return attempt
+    const grace = opts?.forceKillAfter ?? DEFAULT_FORCE_KILL_AFTER
     return Effect.timeoutOrElse(attempt, {
       duration: grace,
       // SIGKILL is the last resort: signal the group, then wait for `closed`
