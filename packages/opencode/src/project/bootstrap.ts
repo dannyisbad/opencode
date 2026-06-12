@@ -7,7 +7,7 @@ import * as Project from "./project"
 import * as Vcs from "./vcs"
 import { InstanceState } from "@/effect/instance-state"
 import { ShareNext } from "@/share/share-next"
-import { Effect, Layer } from "effect"
+import { Duration, Effect, Layer } from "effect"
 import { Config } from "@/config/config"
 import { Service } from "./bootstrap-service"
 
@@ -33,16 +33,36 @@ export const layer = Layer.effect(
       const ctx = yield* InstanceState.context
       yield* Effect.logInfo("bootstrapping", { directory: ctx.directory })
       // everything depends on config so eager load it for nice traces
-      yield* config.get()
+      const ms = (d: Duration.Duration) => Math.round(Duration.toMillis(d))
+      const [cfgD] = yield* Effect.timed(config.get())
       // Plugin can mutate config so it has to be initialized before anything else.
-      yield* plugin.init()
+      const [pluginD] = yield* Effect.timed(plugin.init())
       // Each service self-manages its own slow work via Effect.forkScoped against
       // its per-instance state scope. We just await materialization here.
-      yield* Effect.forEach(
-        [lsp, shareNext, format, vcs, snapshot, project],
-        (s) => s.init().pipe(Effect.catchCause((cause) => Effect.logWarning("init failed", { cause }))),
-        { concurrency: "unbounded", discard: true },
-      ).pipe(Effect.withSpan("InstanceBootstrap.init"))
+      const services = [
+        ["lsp", lsp],
+        ["share", shareNext],
+        ["format", format],
+        ["vcs", vcs],
+        ["snapshot", snapshot],
+        ["project", project],
+      ] as const
+      const [svcD] = yield* Effect.timed(
+        Effect.forEach(
+          services,
+          ([name, s]) =>
+            Effect.timed(s.init().pipe(Effect.catchCause((cause) => Effect.logWarning("init failed", { cause })))).pipe(
+              Effect.tap(([d]) => Effect.logInfo("boot phase", { service: name, ms: ms(d) })),
+            ),
+          { concurrency: "unbounded", discard: true },
+        ).pipe(Effect.withSpan("InstanceBootstrap.init")),
+      )
+      yield* Effect.logInfo("boot timing", {
+        directory: ctx.directory,
+        configMs: ms(cfgD),
+        pluginMs: ms(pluginD),
+        servicesMs: ms(svcD),
+      })
     }).pipe(Effect.withSpan("InstanceBootstrap"))
 
     return Service.of({ run })
