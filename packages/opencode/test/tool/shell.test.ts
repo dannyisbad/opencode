@@ -6,7 +6,7 @@ import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "../../src/shell/shell"
-import { ShellTool, foregroundWindowMs } from "../../src/tool/shell"
+import { ShellTool, foregroundWindowMs, normalizeMonitor } from "../../src/tool/shell"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
@@ -1495,6 +1495,15 @@ describe("tool.shell foreground window", () => {
     Effect.sync(() => {
       expect(foregroundWindowMs(300_000)).toBe(35_000)
       expect(foregroundWindowMs(60_000)).toBe(35_000)
+    }),
+  )
+
+  it.live("ignores blank monitor strings", () =>
+    Effect.sync(() => {
+      expect(normalizeMonitor()).toBeUndefined()
+      expect(normalizeMonitor("")).toBeUndefined()
+      expect(normalizeMonitor("   ")).toBeUndefined()
+      expect(normalizeMonitor("ALERT-")?.source).toBe("ALERT-")
     }),
   )
 })

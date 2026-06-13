@@ -64,6 +64,16 @@ export function foregroundWindowMs(timeout?: number): number {
   return Math.min(timeout, AUTO_BACKGROUND_MS) + KILL_GRACE_MS
 }
 
+export function normalizeMonitor(monitor?: string): RegExp | undefined {
+  const pattern = monitor?.trim()
+  if (!pattern) return undefined
+  try {
+    return new RegExp(pattern)
+  } catch (e) {
+    throw new Error(`Invalid monitor regex: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
 function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000))
   if (total < 60) return `${total}s`
@@ -1047,14 +1057,7 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              let monitor: RegExp | undefined
-              if (params.monitor !== undefined) {
-                try {
-                  monitor = new RegExp(params.monitor)
-                } catch (e) {
-                  throw new Error(`Invalid monitor regex: ${e instanceof Error ? e.message : String(e)}`)
-                }
-              }
+              const monitor = normalizeMonitor(params.monitor)
               // `timeout` is the kill deadline the worker enforces; the
               // turn-blocking foreground wait is capped near 30s regardless —
               // see foregroundWindowMs. Without a timeout the worker applies
