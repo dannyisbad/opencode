@@ -363,6 +363,20 @@ export function Session() {
     },
   )
 
+  const [workflowHintDismissed, setWorkflowHintDismissed] = createSignal(false)
+  createEffect(() => {
+    const run = workflowRun()
+    if (run?.status !== "running") return
+    setWorkflowHintDismissed(false)
+    const timer = setTimeout(() => setWorkflowHintDismissed(true), 5000)
+    onCleanup(() => clearTimeout(timer))
+  })
+  const workflowHintRun = createMemo(() => {
+    const run = workflowRun()
+    if (run?.status !== "running" || workflowHintDismissed()) return false
+    return run
+  })
+
   createEffect(() => {
     const sessionID = route.sessionID
     void (async () => {
@@ -1176,33 +1190,7 @@ export function Session() {
         moveFirstChild()
       },
     },
-    {
-      title: kv.get("ultracode_enabled", false) ? "Disable ultracode" : "Enable ultracode",
-      value: "session.ultracode.toggle",
-      category: "Session",
-      slash: {
-        name: "ultracode",
-      },
-      run: () => {
-        const next = !kv.get("ultracode_enabled", false)
-        kv.set("ultracode_enabled", next)
-        const sessionData = session()
-        if (sessionData) {
-          void sdk.client.session.update({
-            sessionID: route.sessionID,
-            metadata: {
-              ...sessionData.metadata,
-              ultracode_enabled: next,
-            },
-          })
-        }
-        toast.show({
-          message: next ? "Ultracode enabled for this TUI session" : "Ultracode disabled",
-          variant: "info",
-        })
-        dialog.clear()
-      },
-    },
+
     {
       title: "Open workflow details",
       value: "session.workflow.open",
@@ -1481,7 +1469,7 @@ export function Session() {
                     </Switch>
                   )}
                 </For>
-                <Show when={workflowRun()?.status === "running" && workflowRun()}>
+                <Show when={workflowHintRun()}>
                   {(run) => (
                     <box paddingTop={1} paddingLeft={3}>
                       <text fg={theme.text}>

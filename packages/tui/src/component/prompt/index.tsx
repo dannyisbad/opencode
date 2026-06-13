@@ -178,6 +178,30 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
+
+  createEffect(
+    on(status, (current, previous) => {
+      if (previous?.type === "idle" || current.type !== "idle") return
+      if (kv.get("ultracode_enabled", false)) return
+      const sessionData = currentSession()
+      const sessionID = props.sessionID
+      if (!sessionData || !sessionID) return
+      // Keyword-triggered ultracode is marked on the SESSION (ultracode_keyword),
+      // not a per-prompt-instance flag, so the session-route prompt can deactivate
+      // it even when the activating turn was the first message sent from Home (a
+      // different prompt instance that never sees this session's status change).
+      if (sessionData.metadata?.ultracode_keyword !== true) return
+      void sdk.client.session.update({
+        sessionID,
+        metadata: {
+          ...sessionData.metadata,
+          ultracode_enabled: false,
+          ultracode_keyword: false,
+        },
+      })
+    }),
+  )
+
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = useOpencodeKeymap()
@@ -340,6 +364,7 @@ export function Prompt(props: PromptProps) {
     return currentSession()?.metadata?.ultracode_enabled === true
   })
   let abortingSessionID: string | undefined
+  let keywordUltracodeActivation = false
 
   createEffect(
     on(
@@ -1061,6 +1086,10 @@ export function Prompt(props: PromptProps) {
     }
 
     const preferDynamicWorkflow = ultracodeEnabled() || shouldPreferDynamicWorkflow(store.prompt.input)
+    keywordUltracodeActivation =
+      !kv.get("ultracode_enabled", false) &&
+      currentSession()?.metadata?.ultracode_enabled !== true &&
+      shouldPreferDynamicWorkflow(store.prompt.input)
     const variant = local.model.variant.current()
     let sessionID = props.sessionID
     let finishMoveProgress = false
@@ -1081,7 +1110,11 @@ export function Prompt(props: PromptProps) {
           id: selectedModel.modelID,
           variant,
         },
-        metadata: preferDynamicWorkflow ? { ultracode_enabled: true } : undefined,
+        metadata: preferDynamicWorkflow
+          ? keywordUltracodeActivation
+            ? { ultracode_enabled: true, ultracode_keyword: true }
+            : { ultracode_enabled: true }
+          : undefined,
       })
 
       if (res.error) {
@@ -1202,6 +1235,7 @@ export function Prompt(props: PromptProps) {
           metadata: {
             ...sessionData.metadata,
             ultracode_enabled: true,
+            ...(keywordUltracodeActivation ? { ultracode_keyword: true } : {}),
           },
         })
       }

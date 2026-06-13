@@ -773,6 +773,33 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         category: "System",
       },
       {
+        name: "app.ultracode.toggle",
+        title: kv.get("ultracode_enabled", false) ? "Disable ultracode" : "Enable ultracode",
+        slashName: "ultracode",
+        run: async () => {
+          const next = !kv.get("ultracode_enabled", false)
+          kv.set("ultracode_enabled", next)
+          if (route.data.type === "session") {
+            const result = await sdk.client.session.get({ sessionID: route.data.sessionID })
+            if (result.data) {
+              void sdk.client.session.update({
+                sessionID: route.data.sessionID,
+                metadata: {
+                  ...result.data.metadata,
+                  ultracode_enabled: next,
+                },
+              })
+            }
+          }
+          toast.show({
+            message: next ? "Ultracode enabled" : "Ultracode disabled",
+            variant: "info",
+          })
+          dialog.clear()
+        },
+        category: "System",
+      },
+      {
         name: "theme.switch",
         title: "Switch theme",
         slashName: "themes",
