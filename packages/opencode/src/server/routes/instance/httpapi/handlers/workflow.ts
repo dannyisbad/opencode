@@ -60,12 +60,16 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
     const generate = Effect.fn("WorkflowHttpApi.generate")(function* (ctx: { payload: GeneratePayload }) {
       const cfg = yield* config.get()
       let dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true
-      if (!dynamicWorkflowsEnabled && ctx.payload.permissionSessionID) {
+      let sessionModel: string | undefined
+      if (ctx.payload.permissionSessionID) {
         const sess = yield* sessions
           .get(ctx.payload.permissionSessionID)
           .pipe(Effect.catch(() => Effect.succeed(undefined)))
         if (sess?.metadata?.ultracode_enabled === true) {
           dynamicWorkflowsEnabled = true
+        }
+        if (sess?.model) {
+          sessionModel = `${sess.model.providerID}/${sess.model.id}`
         }
       }
       if (!dynamicWorkflowsEnabled) {
@@ -80,9 +84,12 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
       // `dynamic-job_xxxx.ts` and clobbered each other. The full id is unique.
       const workflowName = `dynamic-${runId}`
       const filepath = path.join(dynamicDir, `${workflowName}.ts`)
+      const generateModel = ctx.payload.model
+        ? `${ctx.payload.model.providerID}/${ctx.payload.model.modelID}`
+        : sessionModel
       const plan = yield* planDynamicWorkflow({
         objective: ctx.payload.objective,
-        model: ctx.payload.model as { providerID: any; modelID: any } | undefined,
+        model: generateModel as { providerID: any; modelID: any } | undefined,
         agent: ctx.payload.agent,
         variant: ctx.payload.variant,
       }).pipe(Effect.mapError((error) => new WorkflowApiError({ message: error instanceof Error ? error.message : String(error) })))
@@ -100,9 +107,7 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
           temporary: true,
           // Same override the planner used: steer the generated workflow's
           // agents with the requested model, not just plan generation.
-          model: ctx.payload.model
-            ? `${ctx.payload.model.providerID}/${ctx.payload.model.modelID}`
-            : undefined,
+          model: generateModel,
         })
         .pipe(Effect.mapError(apiError))
     })

@@ -1275,22 +1275,27 @@ export const layer = Layer.effect(
               //   1. the step's own `model` (agentInput.model),
               //   2. the per-run override (`active.model`, from the generate
               //      call's `model` param),
-              //   3. the global `dynamic_workflows.model` config,
-              //   4. the agent's own default.
+              //   3. the parent session's current model (so dynamic workflows
+              //      inherit the model the user had selected),
+              //   4. the global `dynamic_workflows.model` config,
+              //   5. the agent's own default.
               // So one generate call can pin a whole workflow to a model
               // (overriding config), while a single step can still opt out.
+              const parentSession = active.run.session_id
+                ? yield* sessions
+                  .get(SessionID.make(active.run.session_id))
+                  .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)))
+                : undefined
+              const sessionModel = parentSession?.model
+                ? { providerID: parentSession.model.providerID, modelID: parentSession.model.id }
+                : undefined
               const workflowModel = parseModelString((yield* config.get()).dynamic_workflows?.model)
               const modelInfo = agentInput.model
                 ? Provider.parseModel(agentInput.model)
-                : (active.model ?? workflowModel ?? selected.model)
+                : (active.model ?? sessionModel ?? workflowModel ?? selected.model)
               let parentPermission: PermissionV1.Ruleset = []
-              if (active.run.session_id) {
-                const parentSession = yield* sessions
-                  .get(SessionID.make(active.run.session_id))
-                  .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)))
-                if (parentSession?.permission) {
-                  parentPermission = parentSession.permission
-                }
+              if (parentSession?.permission) {
+                parentPermission = parentSession.permission
               }
               const session = yield* sessions.create({
                 parentID: active.run.session_id ? SessionID.make(active.run.session_id) : undefined,

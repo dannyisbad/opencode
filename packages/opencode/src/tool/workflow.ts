@@ -626,15 +626,20 @@ export const WorkflowTool = Tool.define(
             if (!params.objective) return yield* Effect.fail(new Error("objective is required for action=generate"))
             const cfg = yield* config.get()
             let dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true
-            if (!dynamicWorkflowsEnabled && ctx.sessionID) {
+            let sessionModel: string | undefined
+            if (ctx.sessionID) {
               const sess = yield* sessions.get(ctx.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
               if (sess?.metadata?.ultracode_enabled === true) {
                 dynamicWorkflowsEnabled = true
+              }
+              if (sess?.model) {
+                sessionModel = `${sess.model.providerID}/${sess.model.id}`
               }
             }
             if (!dynamicWorkflowsEnabled) {
               return yield* Effect.fail(new Error("Dynamic workflows are disabled in config"))
             }
+            const generateModel = params.model ?? sessionModel
             const ops = promptOps(ctx)
             const instance = yield* InstanceState.context
             const projectRoot = instance.worktree === "/" ? instance.directory : instance.worktree
@@ -669,7 +674,7 @@ export const WorkflowTool = Tool.define(
                 if (!block) return source
                 const declExit = yield* planDynamicWorkflow({
                   objective: params.objective!,
-                  model: parseModelString(params.model),
+                  model: parseModelString(generateModel),
                   generator: "declarative",
                 }).pipe(Effect.exit)
                 if (Exit.isFailure(declExit)) return source
@@ -707,7 +712,7 @@ export const WorkflowTool = Tool.define(
                   body: Effect.gen(function* () {
                     const plan = yield* planDynamicWorkflow({
                       objective: params.objective!,
-                      model: parseModelString(params.model),
+                      model: parseModelString(generateModel),
                       generator: params.generator,
                     })
                     workflowDisplayName = plan.name ?? workflowName
@@ -730,7 +735,7 @@ export const WorkflowTool = Tool.define(
                         permissionSessionID: ctx.sessionID,
                         source: generatedSource,
                         temporary: true,
-                        model: params.model,
+                        model: generateModel,
                       })
                       .pipe(Effect.mapError(workflowError))
 
@@ -782,7 +787,7 @@ export const WorkflowTool = Tool.define(
             // instead so the agent reports it.
             const planExit = yield* planDynamicWorkflow({
               objective: params.objective,
-              model: parseModelString(params.model),
+              model: parseModelString(generateModel),
               generator: params.generator,
             }).pipe(Effect.exit)
             if (Exit.isFailure(planExit)) {
@@ -817,7 +822,7 @@ export const WorkflowTool = Tool.define(
                 permissionSessionID: ctx.sessionID,
                 source: generatedSource,
                 temporary: true,
-                model: params.model,
+                model: generateModel,
               })
               .pipe(Effect.mapError(workflowError))
 
@@ -845,13 +850,18 @@ export const WorkflowTool = Tool.define(
             if (!params.script) return yield* Effect.fail(new Error("script is required for action=run"))
             const cfg = yield* config.get()
             let dynamicWorkflowsEnabled = cfg.dynamic_workflows?.enabled === true
-            if (!dynamicWorkflowsEnabled && ctx.sessionID) {
+            let sessionModel: string | undefined
+            if (ctx.sessionID) {
               const sess = yield* sessions.get(ctx.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
               if (sess?.metadata?.ultracode_enabled === true) dynamicWorkflowsEnabled = true
+              if (sess?.model) {
+                sessionModel = `${sess.model.providerID}/${sess.model.id}`
+              }
             }
             if (!dynamicWorkflowsEnabled) {
               return yield* Effect.fail(new Error("Dynamic workflows are disabled in config"))
             }
+            const runModel = params.model ?? sessionModel
 
             // Preflight the agent-authored script through the SAME static gate the
             // planner's code tier uses (literal meta; no imports / dynamic import /
@@ -908,7 +918,7 @@ export const WorkflowTool = Tool.define(
                     permissionSessionID: ctx.sessionID,
                     source,
                     temporary: true,
-                    model: params.model,
+                    model: runModel,
                   })
                   .pipe(Effect.mapError(workflowError))
               })
