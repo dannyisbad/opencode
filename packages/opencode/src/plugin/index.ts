@@ -304,7 +304,19 @@ export const layer = Layer.effect(
       for (const hook of s.hooks) {
         const fn = hook[name] as any
         if (!fn) continue
-        yield* Effect.promise(async () => fn(input, output))
+        // CONTAINED: a throwing/rejecting hook used to surface here as an Effect
+        // defect (Effect.promise treats rejection as a die) and abort the whole
+        // trigger chain mid-run. Observed live on Windows: a third-party
+        // tool.execute.after hook spawning a child process threw and took the
+        // session down. A plugin hook failure is the plugin's problem — log it
+        // and move on, matching the event-hook path above.
+        yield* Effect.tryPromise({
+          try: () => Promise.resolve(fn(input, output)),
+          catch: errorMessage,
+        }).pipe(
+          Effect.tapError((error) => Effect.logError("plugin trigger hook failed", { type: name, error })),
+          Effect.ignore,
+        )
       }
       return output
     })
