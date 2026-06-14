@@ -20,6 +20,10 @@ exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "background": {
+      "description": "Run in the background and return immediately with a background id. Prefer this for commands that block or run for a long time — dev servers, watchers, long builds/tests, anything you'd otherwise wait minutes on. You are notified automatically when it finishes; read incremental output with the bash_output tool (passing the id) and stop it with bash_kill.",
+      "type": "boolean",
+    },
     "command": {
       "description": "The command to execute",
       "type": "string",
@@ -41,8 +45,12 @@ Output: Creates directory 'foo'"
 ,
       "type": "string",
     },
+    "monitor": {
+      "description": "Watch mode: a regex tested against each output line (ANSI codes stripped); matching lines are PUSHED to you automatically as <monitor_event> blocks (batched, capped at 20 events, auto-disarmed if the pattern floods). Use this for "tell me when X happens" watches — errors in a dev server log, a build finishing — instead of polling bash_output. Implies background mode. Combine with \`timeout\` to bound the watch. Plain regex against the line; no shell pipeline filtering (grep / --line-buffered) needed. Cover every outcome you care about, not just the happy path — a watch that only matches the success marker stays silent through a crash, so prefer alternations like "Ready in|error|Exception|FAILED".",
+      "type": "string",
+    },
     "timeout": {
-      "description": "Optional timeout in milliseconds",
+      "description": "Kill deadline (ms): the command is stopped at this point and its output up to then is returned as a normal completed result — use it for 'run X for N seconds' work. Omit it to let the command run to completion (backgrounded commands are capped at 5 minutes). Note the foreground wait is capped near 30s regardless: a command still running then continues in the background and you are notified on exit, so set \`background: true\` up front for work you know will block.",
       "exclusiveMinimum": 0,
       "maximum": 9007199254740991,
       "minimum": -9007199254740991,
@@ -320,7 +328,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "background": {
-      "description": "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      "description": "Run the agent in the background and return immediately. Prefer this for long-blocking or independent work, or when the user may want to keep talking to you while it runs. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress.",
       "type": "boolean",
     },
     "command": {

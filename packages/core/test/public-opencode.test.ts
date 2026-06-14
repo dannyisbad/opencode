@@ -50,7 +50,7 @@ describe("public native OpenCode API", () => {
         Effect.gen(function* () {
           yield* writeProvider(tmp.path)
           const opencode = yield* OpenCode.Service
-          const sessionID = Session.ID.make("ses_public_switch_available")
+          const sessionID = Session.ID.create()
           const model = ref({ variant: "fast" })
           yield* opencode.sessions.create({
             id: sessionID,
@@ -75,8 +75,8 @@ describe("public native OpenCode API", () => {
           yield* writeProvider(available.path)
           yield* writeProvider(disabled.path, true)
           const opencode = yield* OpenCode.Service
-          const availableID = Session.ID.make("ses_public_switch_exact_available")
-          const disabledID = Session.ID.make("ses_public_switch_exact_disabled")
+          const availableID = Session.ID.create()
+          const disabledID = Session.ID.create()
           yield* opencode.sessions.create({
             id: availableID,
             location: Location.Ref.make({ directory: AbsolutePath.make(available.path) }),
@@ -112,7 +112,7 @@ describe("public native OpenCode API", () => {
         Effect.gen(function* () {
           yield* writeProvider(tmp.path)
           const opencode = yield* OpenCode.Service
-          const sessionID = Session.ID.make("ses_public_switch_variant")
+          const sessionID = Session.ID.create()
           const selected = ref({ variant: "fast" })
           yield* opencode.sessions.create({
             id: sessionID,
@@ -134,7 +134,7 @@ describe("public native OpenCode API", () => {
   it.effect("preserves the typed not-found error for a missing Session", () =>
     Effect.gen(function* () {
       const opencode = yield* OpenCode.Service
-      const sessionID = Session.ID.make("ses_public_switch_missing")
+      const sessionID = Session.ID.create()
       const error = yield* opencode.sessions
         .switchModel({
           sessionID,

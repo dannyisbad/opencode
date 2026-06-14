@@ -2,6 +2,10 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { GlobalBus } from "@/bus/global"
 import { EventV2 } from "@opencode-ai/core/event"
+import { Location } from "@opencode-ai/core/location"
+import { Project } from "@opencode-ai/core/project"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { Effect, Queue } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerResponse } from "effect/unstable/http"
@@ -22,10 +26,19 @@ function eventID() {
   return EventV2.ID.create()
 }
 
+function eventLocation(instance: { directory: string; worktree: string; project: { id: string } }, workspaceID?: string) {
+  return new Location.Info({
+    directory: AbsolutePath.make(instance.directory),
+    ...(workspaceID ? { workspaceID: WorkspaceV2.ID.make(workspaceID) } : {}),
+    project: { id: Project.ID.make(instance.project.id), directory: AbsolutePath.make(instance.worktree) },
+  })
+}
+
 function eventResponse(events: EventV2.Interface) {
   return Effect.gen(function* () {
     const instance = yield* InstanceState.context
     const workspaceID = yield* InstanceState.workspaceID
+    const location = eventLocation(instance, workspaceID)
     // Listener registration is eager, so events published after this point cannot
     // be lost while the HTTP body fiber is starting or emitting server.connected.
     const queue = yield* Queue.unbounded<EventV2.Payload>()
@@ -37,18 +50,31 @@ function eventResponse(events: EventV2.Interface) {
           event.location?.directory === instance.directory &&
           (event.location.workspaceID === undefined || event.location.workspaceID === workspaceID),
       ),
-      Stream.map((event) => ({ id: event.id, type: event.type, properties: event.data })),
+      Stream.map((event) => ({
+        ...event,
+        location: event.location ? eventLocation(instance, event.location.workspaceID) : location,
+        properties: event.data,
+      })),
     )
-    const disposed = Stream.callback<{ id: string; type: string; properties: unknown }>((queue) => {
+    const disposed = Stream.callback<{
+      id: string
+      type: string
+      location: Location.Info
+      data: unknown
+      properties: unknown
+    }>((queue) => {
       const listener = (event: {
         directory?: string
         payload: { id?: string; type?: string; properties?: unknown }
       }) => {
         if (event.directory !== instance.directory || event.payload.type !== "server.instance.disposed") return
+        const data = event.payload.properties ?? {}
         Queue.offerUnsafe(queue, {
           id: event.payload.id ?? eventID(),
           type: "server.instance.disposed",
-          properties: event.payload.properties ?? {},
+          location,
+          data,
+          properties: data,
         })
       }
       return Effect.acquireRelease(
@@ -62,12 +88,12 @@ function eventResponse(events: EventV2.Interface) {
     )
     const heartbeat = Stream.tick("10 seconds").pipe(
       Stream.drop(1),
-      Stream.map(() => ({ id: eventID(), type: "server.heartbeat", properties: {} })),
+      Stream.map(() => ({ id: eventID(), type: "server.heartbeat", location, data: {}, properties: {} })),
     )
 
     yield* Effect.logInfo("event connected")
     return HttpServerResponse.stream(
-      Stream.make({ id: eventID(), type: "server.connected", properties: {} }).pipe(
+      Stream.make({ id: eventID(), type: "server.connected", location, data: {}, properties: {} }).pipe(
         Stream.concat(output.pipe(Stream.merge(heartbeat, { haltStrategy: "left" }))),
         Stream.map(eventData),
         Stream.pipeThroughChannel(Sse.encode()),

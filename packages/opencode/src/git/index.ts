@@ -281,6 +281,7 @@ export const layer = Layer.effect(
       file: string,
       options?: PatchOptions,
     ) {
+      const emptyFile = process.platform === "win32" ? "NUL" : "/dev/null"
       const result = yield* run(
         [
           "diff",
@@ -290,7 +291,7 @@ export const layer = Layer.effect(
           "--no-renames",
           `--unified=${options?.context ?? 3}`,
           "--",
-          "/dev/null",
+          emptyFile,
           file,
         ],
         { cwd, maxOutputBytes: options?.maxOutputBytes },
@@ -299,7 +300,8 @@ export const layer = Layer.effect(
     })
 
     const statUntracked = Effect.fn("Git.statUntracked")(function* (cwd: string, file: string) {
-      const result = yield* run(["diff", "--no-index", "--numstat", "--", "/dev/null", file], {
+      const emptyFile = process.platform === "win32" ? "NUL" : "/dev/null"
+      const result = yield* run(["diff", "--no-index", "--numstat", "--", emptyFile, file], {
         cwd,
         maxOutputBytes: 4096,
       })

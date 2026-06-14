@@ -42,6 +42,14 @@ export const EventHandler = HttpApiBuilder.group(Api, "server.event", (handlers)
                       event.location?.directory === location.directory &&
                       event.location.workspaceID === location.workspaceID,
                   ),
+                  Stream.map((event) => ({
+                    ...event,
+                    location: new Location.Info({
+                      directory: event.location?.directory ?? location.directory,
+                      workspaceID: event.location?.workspaceID,
+                      project: location.project,
+                    }),
+                  })),
                 ),
             ),
             Stream.map(eventData),

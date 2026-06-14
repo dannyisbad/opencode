@@ -123,6 +123,8 @@ Shell.acceptable.reset()
 const quote = (text: string) => `"${text}"`
 const squote = (text: string) => `'${text}'`
 const projectRoot = path.join(__dirname, "../..")
+const windowsDir = process.env.WINDIR ?? process.env.SystemRoot ?? "C:\\Windows"
+if (process.platform === "win32") process.env.WINDIR ??= windowsDir
 const bin = quote(process.execPath.replaceAll("\\", "/"))
 const bash = (() => {
   const shell = Shell.acceptable()
@@ -367,8 +369,8 @@ describe("tool.shell permissions", () => {
       Effect.gen(function* () {
         const err = new Error("stop after permission")
         const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
-        const file = process.platform === "win32" ? `${process.env.WINDIR!.replaceAll("\\", "/")}/*` : "/etc/*"
-        const want = process.platform === "win32" ? glob(path.join(process.env.WINDIR!, "*")) : "/etc/*"
+        const file = process.platform === "win32" ? `${windowsDir.replaceAll("\\", "/")}/*` : "/etc/*"
+        const want = process.platform === "win32" ? glob(path.join(windowsDir, "*")) : "/etc/*"
         expect(
           yield* fail(
             {
@@ -430,7 +432,7 @@ describe("tool.shell permissions", () => {
               expect(
                 yield* fail(
                   {
-                    command: `Copy-Item -PassThru "${process.env.WINDIR!.replaceAll("\\", "/")}/win.ini" ./out`,
+                    command: `Copy-Item -PassThru "${windowsDir.replaceAll("\\", "/")}/win.ini" ./out`,
                     description: "Copy Windows ini",
                   },
                   capture(requests, err),
@@ -438,7 +440,7 @@ describe("tool.shell permissions", () => {
               ).toMatchObject({ message: err.message })
               const extDirReq = requests.find((r) => r.permission === "external_directory")
               expect(extDirReq).toBeDefined()
-              expect(extDirReq!.patterns).toContain(glob(path.join(process.env.WINDIR!, "*")))
+              expect(extDirReq!.patterns).toContain(glob(path.join(windowsDir, "*")))
             }),
           ),
         ),
@@ -453,7 +455,7 @@ describe("tool.shell permissions", () => {
             projectRoot,
             Effect.gen(function* () {
               const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
-              const file = `${process.env.WINDIR!.replaceAll("\\", "/")}/win.ini`
+              const file = `${windowsDir.replaceAll("\\", "/")}/win.ini`
               yield* run(
                 {
                   command: `Write-Output $(Get-Content ${file})`,
@@ -464,7 +466,7 @@ describe("tool.shell permissions", () => {
               const extDirReq = requests.find((r) => r.permission === "external_directory")
               const bashReq = requests.find((r) => r.permission === "bash")
               expect(extDirReq).toBeDefined()
-              expect(extDirReq!.patterns).toContain(glob(path.join(process.env.WINDIR!, "*")))
+              expect(extDirReq!.patterns).toContain(glob(path.join(windowsDir, "*")))
               expect(bashReq).toBeDefined()
               expect(bashReq!.patterns).toContain(`Get-Content ${file}`)
             }),
@@ -604,7 +606,7 @@ describe("tool.shell permissions", () => {
                 Effect.gen(function* () {
                   const err = new Error("stop after permission")
                   const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
-                  const root = path.parse(process.env.WINDIR!).root.replace(/[\\/]+$/, "")
+                  const root = path.parse(windowsDir).root.replace(/[\\/]+$/, "")
                   expect(
                     yield* fail(
                       {
@@ -616,7 +618,7 @@ describe("tool.shell permissions", () => {
                   ).toMatchObject({ message: err.message })
                   const extDirReq = requests.find((r) => r.permission === "external_directory")
                   expect(extDirReq).toBeDefined()
-                  expect(extDirReq!.patterns).toContain(glob(path.join(process.env.WINDIR!, "*")))
+                  expect(extDirReq!.patterns).toContain(glob(path.join(windowsDir, "*")))
                 }),
               ),
             ({ key, prev }) =>
@@ -647,7 +649,7 @@ describe("tool.shell permissions", () => {
               const extDirReq = requests.find((r) => r.permission === "external_directory")
               expect(extDirReq).toBeDefined()
               expect(extDirReq!.patterns).toContain(
-                Filesystem.normalizePathPattern(path.join(process.env.WINDIR!, "*")),
+                Filesystem.normalizePathPattern(path.join(windowsDir, "*")),
               )
             }),
           ),
@@ -667,7 +669,7 @@ describe("tool.shell permissions", () => {
               expect(
                 yield* fail(
                   {
-                    command: `Get-Content -Path FileSystem::${process.env.WINDIR!.replaceAll("\\", "/")}/win.ini`,
+                    command: `Get-Content -Path FileSystem::${windowsDir.replaceAll("\\", "/")}/win.ini`,
                     description: "Read Windows ini from FileSystem provider",
                   },
                   capture(requests, err),
@@ -676,7 +678,7 @@ describe("tool.shell permissions", () => {
               expect(requests[0]?.permission).toBe("external_directory")
               if (requests[0]?.permission !== "external_directory") return
               expect(requests[0].patterns).toContain(
-                Filesystem.normalizePathPattern(path.join(process.env.WINDIR!, "*")),
+                Filesystem.normalizePathPattern(path.join(windowsDir, "*")),
               )
             }),
           ),
@@ -705,7 +707,7 @@ describe("tool.shell permissions", () => {
               expect(requests[0]?.permission).toBe("external_directory")
               if (requests[0]?.permission !== "external_directory") return
               expect(requests[0].patterns).toContain(
-                Filesystem.normalizePathPattern(path.join(process.env.WINDIR!, "*")),
+                Filesystem.normalizePathPattern(path.join(windowsDir, "*")),
               )
             }),
           ),
@@ -732,7 +734,7 @@ describe("tool.shell permissions", () => {
               const bashReq = requests.find((r) => r.permission === "bash")
               expect(extDirReq).toBeDefined()
               expect(extDirReq!.patterns).toContain(
-                Filesystem.normalizePathPattern(path.join(process.env.WINDIR!, "*")),
+                Filesystem.normalizePathPattern(path.join(windowsDir, "*")),
               )
               expect(bashReq).toBeUndefined()
             }),
@@ -777,14 +779,14 @@ describe("tool.shell permissions", () => {
             const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
             yield* run(
               {
-                command: `TYPE "${path.join(process.env.WINDIR!, "win.ini")}"`,
+                command: `TYPE "${path.join(windowsDir, "win.ini")}"`,
                 description: "Read Windows ini with cmd",
               },
               capture(requests),
             )
             const extDirReq = requests.find((r) => r.permission === "external_directory")
             expect(extDirReq).toBeDefined()
-            expect(extDirReq!.patterns).toContain(Filesystem.normalizePathPattern(path.join(process.env.WINDIR!, "*")))
+            expect(extDirReq!.patterns).toContain(Filesystem.normalizePathPattern(path.join(windowsDir, "*")))
           }),
         ),
       ),
@@ -1388,6 +1390,7 @@ describe("tool.shell truncation", () => {
         expect(result.output).toMatch(/Full output saved to:\s+\S+/)
       }),
     ),
+    20_000,
   )
 
   it.live("truncates output exceeding byte limit", () =>

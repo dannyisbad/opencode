@@ -116,8 +116,8 @@ describe("session.system", () => {
   it.effect("skills output is sorted by name and stable across calls", () =>
     Effect.gen(function* () {
       const prompt = yield* SystemPrompt.Service
-      const first = yield* prompt.skills(build)
-      const second = yield* prompt.skills(build)
+      const first = yield* prompt.skills(build, { hasStaticLegacyRequest: true })
+      const second = yield* prompt.skills(build, { hasStaticLegacyRequest: true })
       const output = first ?? (yield* Effect.fail(new NamedError.Unknown({ message: "missing skills output" })))
 
       expect(first).toBe(second)
@@ -132,7 +132,7 @@ describe("session.system", () => {
       expect(output).not.toContain("manual-skill")
       expect(output).toContain("<available_workflows>")
       expect(output).toContain("<name>release_notes</name>")
-      expect(output).toContain("Do not use workflows by default")
+      expect(output).toContain("Do not use or suggest them by default")
     }),
   )
 })
