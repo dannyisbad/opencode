@@ -84,7 +84,7 @@ export type WorkflowPipelineStage<Prev, Item, Next> = (prev: Prev, item: Item, i
 /** Per-item pipeline. Each item flows through every stage SEQUENTIALLY (stage N+1
  * receives stage N's result for that item), while items run concurrently against
  * each other (no barrier between stages). Result is the last stage's output in
- * item order. Overloaded for 1..4 stages so heterogeneous types flow through.
+ * item order. Overloaded for 1..8 stages so heterogeneous types flow through.
  *
  * Each item is ISOLATED: if any stage throws, that item drops to `null` (its
  * remaining stages are skipped, the error is logged on the run) instead of
@@ -114,6 +114,48 @@ export interface WorkflowPipelineFn {
     s4: WorkflowPipelineStage<C, I, D>,
     options?: WorkflowPipelineOptions,
   ): Promise<(D | null)[]>
+  <I, A, B, C, D, E>(
+    items: readonly I[],
+    s1: WorkflowPipelineStage<I, I, A>,
+    s2: WorkflowPipelineStage<A, I, B>,
+    s3: WorkflowPipelineStage<B, I, C>,
+    s4: WorkflowPipelineStage<C, I, D>,
+    s5: WorkflowPipelineStage<D, I, E>,
+    options?: WorkflowPipelineOptions,
+  ): Promise<(E | null)[]>
+  <I, A, B, C, D, E, F>(
+    items: readonly I[],
+    s1: WorkflowPipelineStage<I, I, A>,
+    s2: WorkflowPipelineStage<A, I, B>,
+    s3: WorkflowPipelineStage<B, I, C>,
+    s4: WorkflowPipelineStage<C, I, D>,
+    s5: WorkflowPipelineStage<D, I, E>,
+    s6: WorkflowPipelineStage<E, I, F>,
+    options?: WorkflowPipelineOptions,
+  ): Promise<(F | null)[]>
+  <I, A, B, C, D, E, F, G>(
+    items: readonly I[],
+    s1: WorkflowPipelineStage<I, I, A>,
+    s2: WorkflowPipelineStage<A, I, B>,
+    s3: WorkflowPipelineStage<B, I, C>,
+    s4: WorkflowPipelineStage<C, I, D>,
+    s5: WorkflowPipelineStage<D, I, E>,
+    s6: WorkflowPipelineStage<E, I, F>,
+    s7: WorkflowPipelineStage<F, I, G>,
+    options?: WorkflowPipelineOptions,
+  ): Promise<(G | null)[]>
+  <I, A, B, C, D, E, F, G, H>(
+    items: readonly I[],
+    s1: WorkflowPipelineStage<I, I, A>,
+    s2: WorkflowPipelineStage<A, I, B>,
+    s3: WorkflowPipelineStage<B, I, C>,
+    s4: WorkflowPipelineStage<C, I, D>,
+    s5: WorkflowPipelineStage<D, I, E>,
+    s6: WorkflowPipelineStage<E, I, F>,
+    s7: WorkflowPipelineStage<F, I, G>,
+    s8: WorkflowPipelineStage<G, I, H>,
+    options?: WorkflowPipelineOptions,
+  ): Promise<(H | null)[]>
 }
 
 export type WorkflowContext = {

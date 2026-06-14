@@ -937,6 +937,7 @@ function createContext(input: {
       const stages = (hasOptions ? rest.slice(0, -1) : rest) as ReadonlyArray<
         (prev: unknown, item: unknown, index: number) => Promise<unknown>
       >
+      if (stages.length > 8) throw new Error("ctx.pipeline supports at most 8 stages")
       // Same clamp as parallel(): an explicit limit ≤0 is floored to 1, matching
       // parallel's `Math.max(1, …)`. Only an UNSET limit means "unbounded".
       const concurrency = options?.concurrencyLimit === undefined ? "unbounded" : Math.max(1, options.concurrencyLimit)
@@ -1046,7 +1047,7 @@ function createContext(input: {
     },
     async loop(options) {
       checkpoint()
-      const maxIterations = Math.max(1, Math.min(options.maxIterations ?? 5, 20))
+      const maxIterations = Math.max(1, Math.min(options.maxIterations ?? 5, 100))
       const collected: { data: unknown; text: string }[] = []
       for (let i = 0; i < maxIterations; i++) {
         checkpoint()

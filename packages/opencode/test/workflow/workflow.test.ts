@@ -495,6 +495,58 @@ describe("Workflow", () => {
     }),
   )
 
+  it.instance("pipeline allows up to eight stages and rejects a ninth", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "pipeline-stage-limit",
+          `export const meta = { name: "pipeline-stage-limit", phases: ["pipeline"] }
+export async function run(args, ctx) {
+  const eight = await ctx.pipeline(
+    [0],
+    async (value) => value + 1,
+    async (value) => value + 2,
+    async (value) => value + 3,
+    async (value) => value + 4,
+    async (value) => value + 5,
+    async (value) => value + 6,
+    async (value) => value + 7,
+    async (value) => value + 8,
+  )
+  if (args.tooMany) {
+    await ctx.pipeline(
+      [0],
+      async (value) => value + 1,
+      async (value) => value + 2,
+      async (value) => value + 3,
+      async (value) => value + 4,
+      async (value) => value + 5,
+      async (value) => value + 6,
+      async (value) => value + 7,
+      async (value) => value + 8,
+      async (value) => value + 9,
+    )
+  }
+  return { eight }
+}
+`,
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const ok = yield* workflow.start({ name: "pipeline-stage-limit", args: {} })
+      const okDone = yield* workflow.wait({ id: ok.id })
+      expect(okDone.run?.status).toBe("completed")
+      expect(okDone.run?.result).toEqual({ eight: [36] })
+
+      const failed = yield* workflow.start({ name: "pipeline-stage-limit", args: { tooMany: true } })
+      const failedDone = yield* workflow.wait({ id: failed.id })
+      expect(failedDone.run?.status).toBe("failed")
+      expect(failedDone.run?.error).toContain("at most 8 stages")
+    }),
+  )
+
   it.instance("parallel respects concurrencyLimit", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -1361,6 +1413,34 @@ export async function run(args, ctx) {
           "replied to run on replied to run on replied to initial loop 0 loop 1 loop 2",
         ],
       })
+    }),
+  )
+
+  it.instance("loop clamps maxIterations to one hundred", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "loop-clamp",
+          `export const meta = { name: "loop-clamp", phases: ["run"] }
+export async function run(args, ctx) {
+  const results = await ctx.loop({
+    fn: async (i) => ({ data: i, text: String(i) }),
+    until: async () => false,
+    maxIterations: 150,
+  })
+  return { count: results.length, last: results.at(-1)?.text }
+}
+`,
+          "ts",
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const run = yield* workflow.start({ name: "loop-clamp" })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(done.run?.result).toEqual({ count: 100, last: "99" })
     }),
   )
 
