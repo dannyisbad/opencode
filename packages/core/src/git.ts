@@ -220,17 +220,18 @@ export const layer = Layer.effect(
         })
       }
 
+      const emptyFile = process.platform === "win32" ? "NUL" : "/dev/null"
       const created = yield* Effect.forEach(untracked.text.split("\0").filter(Boolean), (file) =>
         execute(
           repo,
           proc,
-        )(["diff", "--binary", "--no-index", "--", "/dev/null", file]).pipe(
+        )(["diff", "--binary", "--no-index", "--", emptyFile, file]).pipe(
           Effect.mapError(
             (cause) => new PatchError({ operation: "capture", directory, message: cause.message, cause }),
           ),
           Effect.flatMap((result) =>
             // git diff --no-index returns 1 when differences were found.
-            result.exitCode === 0 || result.exitCode === 1
+            (result.exitCode === 0 || result.exitCode === 1) && result.text
               ? Effect.succeed(result.text)
               : Effect.fail(
                   new PatchError({

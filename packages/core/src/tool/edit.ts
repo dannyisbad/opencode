@@ -3,6 +3,8 @@
  * Location. Absolute paths inside that Location are accepted, while explicit
  * absolute external paths retain mutation capability through a separate
  * external_directory approval before edit approval.
+ * Named project references
+ * are read-oriented and deliberately are not accepted by mutation tools.
  */
 export * as EditTool from "./edit"
 

@@ -4,7 +4,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Provider } from "@/provider/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { Cause, Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
 import { LLMEvent } from "@opencode-ai/llm"
@@ -376,15 +376,6 @@ const live: Layer.Layer<
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
               Stream.timeout("5 minutes"),
-              Stream.catchCause((cause) => {
-                const squashed = Cause.squash(cause)
-                const msg = squashed instanceof Error ? squashed.message : String(squashed)
-                return Stream.fromIterable([
-                  LLMEvent.providerError({
-                    message: `Stream error: ${msg}`,
-                  }),
-                ])
-              }),
             )
           }),
         ),

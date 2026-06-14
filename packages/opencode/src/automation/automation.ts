@@ -4,6 +4,7 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import * as Log from "@opencode-ai/core/util/log"
 import { and, desc, eq, inArray, lte, sql } from "drizzle-orm"
 import { Database as CoreDatabase } from "@opencode-ai/core/database/database"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -1560,6 +1561,16 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(CoreDatabase.defaultLayer),
   ),
 )
+
+export const node = LayerNode.make(layer, [
+  Session.node,
+  SessionStatus.node,
+  SessionPrompt.node,
+  SessionSummary.node,
+  Provider.node,
+  Worktree.node,
+  CoreDatabase.node,
+])
 
 export const AutomationTesting = {
   buildPrompt,

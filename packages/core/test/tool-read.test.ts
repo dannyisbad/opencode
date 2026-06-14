@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect } from "bun:test"
+import path from "path"
 import { Effect, Exit, Layer } from "effect"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigAttachments } from "@opencode-ai/core/config/attachments"
@@ -145,7 +146,12 @@ describe("ReadTool", () => {
         },
       })
       expect(assertions).toMatchObject([{ sessionID, action: "read", resources: ["README.md"], save: ["*"] }])
-      expect(readCalls).toEqual([{ input: AbsolutePath.make(`${process.cwd()}/README.md`), page: {} }])
+      expect(readCalls).toEqual([
+        {
+          input: AbsolutePath.make(path.join(process.cwd(), "README.md")),
+          page: { offset: undefined, limit: undefined },
+        },
+      ])
     }),
   )
 
@@ -174,7 +180,12 @@ describe("ReadTool", () => {
           { type: "file", uri: `data:image/png;base64,${png}`, mime: "image/png", name: "pixel.png" },
         ],
       })
-      expect(readCalls).toEqual([{ input: AbsolutePath.make(`${process.cwd()}/pixel.png`), page: {} }])
+      expect(readCalls).toEqual([
+        {
+          input: AbsolutePath.make(path.join(process.cwd(), "pixel.png")),
+          page: { offset: undefined, limit: undefined },
+        },
+      ])
 
       const settled = yield* settleTool(registry, {
         sessionID,
@@ -432,7 +443,7 @@ describe("ReadTool", () => {
         ),
       ).toBe(true)
       expect(readCalls).toEqual([
-        { input: AbsolutePath.make(`${process.cwd()}/archive.dat`), page: { offset: 2, limit: 1 } },
+        { input: AbsolutePath.make(path.join(process.cwd(), "archive.dat")), page: { offset: 2, limit: 1 } },
       ])
     }),
   )
@@ -539,7 +550,7 @@ describe("ReadTool", () => {
         value: { type: "text-page", content: "hello", mime: "text/plain", offset: 2, truncated: true, next: 3 },
       })
       expect(readCalls).toEqual([
-        { input: AbsolutePath.make(`${process.cwd()}/large.txt`), page: { offset: 2, limit: 1 } },
+        { input: AbsolutePath.make(path.join(process.cwd(), "large.txt")), page: { offset: 2, limit: 1 } },
       ])
     }),
   )

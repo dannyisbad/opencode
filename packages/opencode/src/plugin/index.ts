@@ -21,6 +21,7 @@ import { AzureAuthPlugin } from "./azure"
 import { DigitalOceanAuthPlugin } from "./digitalocean"
 import { XaiAuthPlugin } from "./xai"
 import { Effect, Layer, Context, Scope } from "effect"
+import { SnowflakeCortexAuthPlugin } from "./snowflake-cortex"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { errorMessage } from "@/util/error"
@@ -77,6 +78,7 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
     CloudflareAIGatewayAuthPlugin,
     AzureAuthPlugin,
     DigitalOceanAuthPlugin,
+    SnowflakeCortexAuthPlugin,
     XaiAuthPlugin,
   ]
 }
