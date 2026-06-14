@@ -284,26 +284,26 @@ export default function AutomationsPage() {
     return form.model.trim() || currentModel() || "Default model"
   })
   const executionModeOptions = createMemo(() => {
-    if (sync.project?.vcs === "git" || form.executionMode === "worktree") return executionModes
+    if (sync().project?.vcs === "git" || form.executionMode === "worktree") return executionModes
     return executionModes.filter((mode) => mode !== "worktree")
   })
   const loadAutomations = async () => {
-    const result = await sdk.client.automation.list()
+    const result = await sdk().client.automation.list()
     return result.data ?? []
   }
 
   const loadRuns = async () => {
-    const result = await sdk.client.automation.runs({ limit: "100" })
+    const result = await sdk().client.automation.runs({ limit: "100" })
     return result.data ?? []
   }
 
-  const [automations, automationActions] = createResource(() => sdk.directory, loadAutomations)
-  const [runs, runActions] = createResource(() => sdk.directory, loadRuns)
+  const [automations, automationActions] = createResource(() => sdk().directory, loadAutomations)
+  const [runs, runActions] = createResource(() => sdk().directory, loadRuns)
   const [findings] = createResource(
     () => state.selectedRunID,
     async (runID) => {
       if (!runID) return []
-      const result = await sdk.client.automation.run.findings({ runID })
+      const result = await sdk().client.automation.run.findings({ runID })
       return result.data ?? []
     },
   )
@@ -451,11 +451,11 @@ export default function AutomationsPage() {
       async () => {
         const result =
           state.mode === "edit" && state.selectedAutomationID
-            ? await sdk.client.automation.update({
+            ? await sdk().client.automation.update({
                 automationID: state.selectedAutomationID,
                 automationUpdateInput: payload satisfies AutomationUpdateInput,
               })
-            : await sdk.client.automation.create({ automationCreateInput: payload })
+            : await sdk().client.automation.create({ automationCreateInput: payload })
         await reload()
         if (result.data) selectAutomation(result.data)
       },
@@ -467,7 +467,7 @@ export default function AutomationsPage() {
     void runAction(
       `${automation.id}:enabled`,
       async () => {
-        await sdk.client.automation.update({
+        await sdk().client.automation.update({
           automationID: automation.id,
           automationUpdateInput: { enabled },
         })
@@ -481,7 +481,7 @@ export default function AutomationsPage() {
     void runAction(
       `${automation.id}:run`,
       async () => {
-        const result = await sdk.client.automation.runNow({ automationID: automation.id })
+        const result = await sdk().client.automation.runNow({ automationID: automation.id })
         await reload()
         if (result.data) {
           setState("tab", "inbox")
@@ -497,7 +497,7 @@ export default function AutomationsPage() {
     void runAction(
       `${automation.id}:duplicate`,
       async () => {
-        const result = await sdk.client.automation.duplicate({ automationID: automation.id })
+        const result = await sdk().client.automation.duplicate({ automationID: automation.id })
         await reload()
         if (result.data) selectAutomation(result.data)
       },
@@ -510,7 +510,7 @@ export default function AutomationsPage() {
     void runAction(
       `${automation.id}:delete`,
       async () => {
-        await sdk.client.automation.delete({ automationID: automation.id })
+        await sdk().client.automation.delete({ automationID: automation.id })
         await reload()
         newAutomation()
       },
@@ -529,7 +529,7 @@ export default function AutomationsPage() {
 
   const markRunRead = (run: AutomationRun, read = true) => {
     void runAction(`${run.id}:read`, async () => {
-      await sdk.client.automation.run.read({ runID: run.id, read })
+      await sdk().client.automation.run.read({ runID: run.id, read })
       await reload()
     })
   }
@@ -543,7 +543,7 @@ export default function AutomationsPage() {
     void runAction(
       `${run.id}:archive`,
       async () => {
-        await sdk.client.automation.run.archive({ runID: run.id, archived: true })
+        await sdk().client.automation.run.archive({ runID: run.id, archived: true })
         await reload()
       },
       "Run archived",
@@ -554,7 +554,7 @@ export default function AutomationsPage() {
     void runAction(
       `${run.id}:cancel`,
       async () => {
-        await sdk.client.automation.run.cancel({ runID: run.id })
+        await sdk().client.automation.run.cancel({ runID: run.id })
         await reload()
       },
       "Run cancelled",
@@ -570,7 +570,7 @@ export default function AutomationsPage() {
     void runAction(`${run.id}:diff`, async () => {
       setDiffLoading(true)
       try {
-        const result = await sdk.client.automation.run.diff({ runID: run.id })
+        const result = await sdk().client.automation.run.diff({ runID: run.id })
         setDiff({ runID: run.id, files: result.data ?? [] })
       } finally {
         setDiffLoading(false)
@@ -644,7 +644,7 @@ export default function AutomationsPage() {
       <div class="shrink-0 border-b border-border-weak-base px-6 py-4 flex items-center justify-between gap-4">
         <div class="min-w-0">
           <h1 class="text-18-medium text-text-strong">Automations</h1>
-          <div class="text-12-regular text-text-base truncate">{sdk.directory}</div>
+          <div class="text-12-regular text-text-base truncate">{sdk().directory}</div>
         </div>
         <div class="flex items-center gap-2">
           <Show when={unreadCount() > 0}>

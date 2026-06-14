@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test"
-import { ServerScope } from "@/utils/server-scope"
+import { ScopedKey, ServerScope } from "@/utils/server-scope"
 
 let getWorkspaceTerminalCacheKey: typeof import("./terminal").getWorkspaceTerminalCacheKey
 let getLegacyTerminalStorageKeys: (dir: string, legacySessionID?: string) => string[]
@@ -26,7 +26,7 @@ beforeAll(async () => {
 
 describe("getWorkspaceTerminalCacheKey", () => {
   test("uses workspace-only directory cache key", () => {
-    expect(getWorkspaceTerminalCacheKey("/repo")).toBe("/repo:__workspace__")
+    expect(getWorkspaceTerminalCacheKey("/repo")).toBe(ScopedKey.from(ServerScope.local, "/repo", "__workspace__"))
   })
 })
 
