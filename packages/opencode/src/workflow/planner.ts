@@ -40,18 +40,21 @@ const codeStandardSchema = Schema.toStandardSchemaV1(CodePlan)
 // workflow. The model only chooses WHAT to do — every mechanic (wiring prior
 // outputs, the verify/refine loop, picking `.at(-1)`, agent sandboxing) is owned
 // by the compiler/engine, so the contract-violation bugs of the code tier cannot
-// occur. Minimal-by-default: the model is steered to the fewest steps that solve
-// the objective rather than reflexively reaching for every primitive.
+// occur. Workflow-by-default: once this planner is asked to generate a workflow,
+// it should choose useful multi-agent decomposition instead of wrapping a normal
+// single-agent answer.
 export function declarativeWorkflowPlannerPrompt(objective: string) {
   return [
     "You are a workflow planner for OpenCode. Produce a STRUCTURED PLAN (data, not code) that solves the objective.",
     "A deterministic compiler turns your plan into a correct workflow — you only choose the steps; never write code.",
+    "A generated workflow should default to multi-agent orchestration: several specialized agents, parallel tracks, staged pipelines, independent review, synthesis, adversarial verification, or iteration. Do not produce a one-agent workflow unless the objective explicitly asks for a single-step workflow.",
+    "Do not be timid about useful fan-out, review, or synthesis solely to conserve tokens; optimize for correctness, coverage, and independent verification.",
     "",
     `Objective: ${objective}`,
     "",
     "Return a WorkflowPlan: { name, description, arguments?, steps[] }. You may emit a short `reasoning` field first to think.",
     "Each step has a unique `id` and a `kind`:",
-    "- agent: one model call. Fields: prompt, agent?, uses?",
+    "- agent: one full autonomous OpenCode subagent step. Fields: prompt, agent?, uses?",
     "- fanout: run the prompt over many items in parallel. Fields: prompt (use {item} for the per-item value), items?: string[] OR itemsFrom?: <earlier id>, agent?, uses?",
     "- pipeline: send one input through ordered stages. Fields: stages: [{ prompt, agent? }], uses?",
     "- verify: adversarially check an earlier step against a rubric. Fields: target: <earlier id>, rubric: string[], maxRetries? (>0 re-runs an agent target with the verifier's issues)",
@@ -61,20 +64,20 @@ export function declarativeWorkflowPlannerPrompt(objective: string) {
     "",
     "AGENTS: the only valid `agent` values are 'build' (writing/code), 'general' (synthesis/verification), and 'explore' (research/finding files). Never use 'plan' or any other name. Omit `agent` to use the default.",
     "",
-    "BE MINIMAL — this is the most important rule. Use the FEWEST steps that actually solve the objective:",
-    "- a trivial ask → ONE agent step.",
-    "- research/compare/gather → a fanout, optionally one synthesize.",
-    "- quality genuinely matters → add ONE verify at the end.",
-    "Do NOT add verify, pipelines, loops, or synthesis 'just in case'. Over-engineering a simple objective is a FAILURE, not thoroughness.",
+    "WORKFLOW DEFAULTS — the point of a workflow is orchestration:",
+    "- Start by decomposing the objective into independent angles, files, components, hypotheses, failures, or candidate fixes.",
+    "- Run independent tracks with fanout or pipeline stages.",
+    "- Use separate synthesis/review steps to reconcile the results; use verify when correctness matters.",
+    "- Agent prompts must tell subagents not to ask the user clarifying questions. If details are missing, they should choose reasonable assumptions and continue, or return `BLOCKED:` with the exact missing information.",
+    "- A single agent step is only acceptable when the objective explicitly asks for a single-step workflow.",
+    "For large fan-in with more than 8 substantive outputs, prefer tree synthesis (fanout to compact notes, synthesize groups, then final synthesize) instead of sending all raw outputs to one final agent.",
+    "Agent prompts should include output limits and artifact boundaries such as 'Return concise bullets' and 'Do not create or edit files' unless the objective explicitly requires edits.",
     "",
-    "BAD (over-engineered for 'summarize this directory in 3 bullets'): fanout → pipeline → synthesize → verify(maxRetries:3). This is wrong.",
-    "GOOD for that objective — a single step:",
-    '  { "id": "summary", "kind": "agent", "prompt": "List the files in the current directory and summarize its purpose in exactly 3 bullet points." }',
-    "",
-    "GOOD for a research objective:",
+    "GOOD for a research or audit objective:",
     '  steps: [',
-    '    { "id": "find", "kind": "fanout", "agent": "explore", "prompt": "Find how {item} is implemented and used.", "items": ["auth", "caching"] },',
-    '    { "id": "report", "kind": "agent", "agent": "general", "prompt": "Write a concise report of the findings.", "uses": ["find"] }',
+    '    { "id": "find", "kind": "fanout", "agent": "explore", "prompt": "Investigate {item}. Return compact findings with evidence. Do not edit files.", "items": ["angle A", "angle B", "angle C"] },',
+    '    { "id": "verify", "kind": "verify", "target": "find", "rubric": ["Evidence supports each finding", "Severity is justified", "No duplicate claims"] },',
+    '    { "id": "report", "kind": "synthesize", "from": ["find", "verify"], "agent": "general", "prompt": "Write the final prioritized report." }',
     "  ]",
   ].join("\n")
 }

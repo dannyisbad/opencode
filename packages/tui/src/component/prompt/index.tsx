@@ -363,6 +363,10 @@ export function Prompt(props: PromptProps) {
     if (shouldPreferDynamicWorkflow(store.prompt.input)) return true
     return currentSession()?.metadata?.ultracode_enabled === true
   })
+  const ultracodeTurnActive = createMemo(() => {
+    if (shouldPreferDynamicWorkflow(store.prompt.input)) return true
+    return status().type !== "idle" && currentSession()?.metadata?.ultracode_keyword === true
+  })
   let abortingSessionID: string | undefined
   let keywordUltracodeActivation = false
 
@@ -1795,7 +1799,7 @@ export function Prompt(props: PromptProps) {
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
                 )}
               </Show>
-              <Show when={ultracodeEnabled()}>
+              <Show when={ultracodeTurnActive()}>
                 <box
                   paddingLeft={1}
                   paddingRight={1}

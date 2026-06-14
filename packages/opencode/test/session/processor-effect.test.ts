@@ -660,6 +660,70 @@ it.live("session.processor effect tests publish retry status updates", () =>
   ),
 )
 
+it.live("session.processor effect tests fail workspace usage limits without retry status", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+
+        yield* llm.error(429, {
+          type: "error",
+          error: {
+            type: "GoUsageLimitError",
+            message: "Subscription quota exceeded. You can continue using free models.",
+          },
+          metadata: {
+            workspace: "wrk_usage_limit",
+            limitName: "5 minute",
+          },
+        })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "usage limit")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const states: number[] = []
+        const off = yield* events.listen((evt) => {
+          if (evt.type !== SessionStatus.Event.Status.type) return Effect.void
+          const data = evt.data as typeof SessionStatus.Event.Status.data.Type
+          if (data.sessionID === chat.id && data.status.type === "retry") states.push(data.status.attempt)
+          return Effect.void
+        })
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "usage limit" }],
+          tools: {},
+        })
+
+        yield* off
+
+        expect(value).toBe("stop")
+        expect(yield* llm.calls).toBe(1)
+        expect(states).toStrictEqual([])
+        expect(handle.message.error?.name).toBe("APIError")
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests compact on structured context overflow", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>

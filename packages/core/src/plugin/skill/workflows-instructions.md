@@ -69,7 +69,7 @@ The `ctx` object available inside `run(args, ctx)` has these operations:
 
 `ctx.agent(...)` details:
 
-- `agent` is optional; omit it to use the default agent. Built-ins include `general`, `build`, `plan`, and `explore`.
+- `agent` is optional; omit it to use the default agent. Built-ins suitable for headless workflows include `general`, `build`, and `explore`. Do not use `plan` inside workflows; it is interactive and can stall.
 - `model` is optional and uses `provider/model` format when a step needs a specific model.
 - `schema` is an optional JSON Schema. When provided, opencode requests structured output from the model.
 - `data` is the parsed structured object when schema output is available; otherwise it is the assistant text.
@@ -95,7 +95,7 @@ const briefSchema = {
 }
 
 const brief = await ctx.agent({
-  agent: "plan",
+  agent: "general",
   schema: briefSchema,
   prompt: [
     `Feature: ${args.feature}`,
@@ -113,7 +113,7 @@ steps and `text` for prose summaries.
 
 ```ts
 ctx.setPhase("plan")
-const plan = await ctx.agent({ agent: "plan", prompt: `Plan work for ${args.topic}` })
+const plan = await ctx.agent({ agent: "general", prompt: `Plan work for ${args.topic}` })
 
 ctx.setPhase("review")
 const review = await ctx.agent({
@@ -134,7 +134,7 @@ Use `ctx.parallel` when independent agents can work from the same input. Add a
 ```ts
 ctx.setPhase("parallel-review")
 const [risk, implementation] = await ctx.parallel([
-  () => ctx.agent({ agent: "plan", prompt: `Find risks in: ${brief.text}` }),
+  () => ctx.agent({ agent: "general", prompt: `Find risks in: ${brief.text}` }),
   () => ctx.agent({ agent: "build", prompt: `Suggest implementation steps for: ${brief.text}` }),
 ])
 
@@ -148,7 +148,7 @@ that list. Build the task array from `data` and cap concurrency.
 
 ```ts
 const topics = await ctx.agent({
-  agent: "plan",
+  agent: "general",
   schema: {
     type: "object",
     additionalProperties: false,
@@ -174,7 +174,7 @@ concurrently.
 ```ts
 const outputs = await ctx.pipeline(["api", "ui", "tests"], [
   async (area) => (await ctx.agent({ agent: "explore", prompt: `Inspect ${area}` })).text,
-  async (notes) => (await ctx.agent({ agent: "plan", prompt: `Turn notes into checks:\n${notes}` })).text,
+  async (notes) => (await ctx.agent({ agent: "general", prompt: `Turn notes into checks:\n${notes}` })).text,
 ])
 ```
 

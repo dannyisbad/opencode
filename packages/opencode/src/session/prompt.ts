@@ -1425,7 +1425,11 @@ export const layer = Layer.effect(
               messages: [...modelMsgs, ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : [])],
               tools,
               model,
-              toolChoice: format.type === "json_schema" ? "required" : undefined,
+              // The StructuredOutput tool remains available and the system prompt
+              // requires using it, but forcing tool choice breaks thinking-enabled
+              // models that reject required tool calls. If the model ignores the
+              // tool, the structured-output failure path below still reports that.
+              toolChoice: undefined,
             })
 
             if (structured !== undefined) {

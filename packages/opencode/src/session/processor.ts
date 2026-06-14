@@ -1082,13 +1082,20 @@ export const layer = Layer.effect(
             // attempting backup models — propagation through halt() is bypassed
             // when using Effect.exit, so we handle it explicitly here.
             if (Exit.isFailure(primaryResult)) {
-              const parsedError = Exit.match(primaryResult, {
+              const failed = Exit.match(primaryResult, {
                 onSuccess: () => undefined,
-                onFailure: (cause) => parse(Cause.squash(cause)),
+                onFailure: (cause) => {
+                  const error = Cause.squash(cause)
+                  return { error, parsed: parse(error) }
+                },
               })
-              if (SessionV1.ContextOverflowError.isInstance(parsedError)) {
+              if (failed && SessionRetry.usageLimit(failed.parsed, input.model.providerID)) {
+                yield* halt(failed.error)
+                return "stop" as const
+              }
+              if (SessionV1.ContextOverflowError.isInstance(failed?.parsed)) {
                 needsCompaction = true
-                yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error: parsedError })
+                yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error: failed.parsed })
               }
             }
 
@@ -1126,11 +1133,18 @@ export const layer = Layer.effect(
                 }
                 if (ctx.needsCompaction) needsCompaction = true
                 if (Exit.isFailure(result)) {
-                  const parsedError = Exit.match(result, {
+                  const failed = Exit.match(result, {
                     onSuccess: () => undefined,
-                    onFailure: (cause) => parse(Cause.squash(cause)),
+                    onFailure: (cause) => {
+                      const error = Cause.squash(cause)
+                      return { error, parsed: parse(error) }
+                    },
                   })
-                  if (SessionV1.ContextOverflowError.isInstance(parsedError)) {
+                  if (failed && SessionRetry.usageLimit(failed.parsed, bm.providerID)) {
+                    yield* halt(failed.error)
+                    return "stop" as const
+                  }
+                  if (SessionV1.ContextOverflowError.isInstance(failed?.parsed)) {
                     needsCompaction = true
                   }
                 }

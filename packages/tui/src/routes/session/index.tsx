@@ -53,6 +53,7 @@ type IdeEditorContext = {
     text?: string
   }
 }
+
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
@@ -100,6 +101,8 @@ import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap 
 import { PathFormatterProvider, usePathFormatter } from "../../context/path-format"
 
 addDefaultParsers(parsers.parsers)
+
+const workflowHintSeenRunIDs = new Set<string>()
 
 const GO_UPSELL_FREE_TIER_LAST_SEEN_AT = "go_upsell_last_seen_at"
 const GO_UPSELL_FREE_TIER_DONT_SHOW = "go_upsell_dont_show"
@@ -363,17 +366,38 @@ export function Session() {
     },
   )
 
-  const [workflowHintDismissed, setWorkflowHintDismissed] = createSignal(false)
-  createEffect(() => {
-    const run = workflowRun()
-    if (run?.status !== "running") return
-    setWorkflowHintDismissed(false)
-    const timer = setTimeout(() => setWorkflowHintDismissed(true), 5000)
-    onCleanup(() => clearTimeout(timer))
-  })
+  const [workflowHintRunID, setWorkflowHintRunID] = createSignal<string>()
+  function dismissWorkflowHint(runID: string) {
+    workflowHintSeenRunIDs.add(runID)
+    if (workflowHintRunID() === runID) setWorkflowHintRunID(undefined)
+  }
+  createEffect(
+    on(
+      () => {
+        const run = workflowRun()
+        return run?.status === "running" ? run.id : undefined
+      },
+      (runID) => {
+        if (!runID) {
+          setWorkflowHintRunID(undefined)
+          return
+        }
+        if (workflowHintSeenRunIDs.has(runID)) {
+          setWorkflowHintRunID(undefined)
+          return
+        }
+        workflowHintSeenRunIDs.add(runID)
+        setWorkflowHintRunID(runID)
+        const timer = setTimeout(() => {
+          if (workflowHintRunID() === runID) setWorkflowHintRunID(undefined)
+        }, 5000)
+        onCleanup(() => clearTimeout(timer))
+      },
+    ),
+  )
   const workflowHintRun = createMemo(() => {
     const run = workflowRun()
-    if (run?.status !== "running" || workflowHintDismissed()) return false
+    if (run?.status !== "running" || workflowHintRunID() !== run.id) return false
     return run
   })
 
@@ -556,6 +580,7 @@ export function Session() {
   function openWorkflowRun() {
     const run = workflowRun()
     if (!run) return
+    dismissWorkflowHint(run.id)
     dialog.replace(() => (
       <DialogWorkflow openRunID={run.id} openPhase={route.workflowPhase} openAgentID={route.workflowAgentID} />
     ))

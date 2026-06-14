@@ -30,7 +30,7 @@ const InspectView = Schema.Literals(["summary", "logs", "agents", "agent", "resu
 const Parameters = Schema.Struct({
   action: Action.annotate({
     description:
-      "Workflow operation: run, read, start, wait, inspect, create, or generate. PREFER run — author the workflow script yourself and pass it as `script`. Reserve generate for when a separate planner model should author it, and create for source the user supplied.",
+      "Workflow operation: run, read, start, wait, inspect, create, or generate. PREFER run — author the workflow script yourself and pass it as `script`. Do not choose generate because writing TypeScript feels heavy; run scripts are expected. Reserve generate for when a separate planner model should author it, and create for source the user supplied.",
   }),
   name: Schema.optional(Schema.String).annotate({
     description: "Workflow name for read/start/create. For create, this is the file name without extension.",
@@ -43,7 +43,7 @@ const Parameters = Schema.Struct({
   // (budgetRemaining <= 0) silently never trip — i.e. unlimited spend.
   budget: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))).annotate({
     description:
-      "Optional cost cap in USD for the whole run. Agent steps stop with a budget error once the cumulative cost reaches this cap. Omit for unlimited.",
+      "Optional cost cap in USD for the whole run. NEVER set this unless the user explicitly asks for a dollar/cost cap; do not invent a budget to save tokens. Omit for unlimited.",
   }),
   background: Schema.optional(Schema.Boolean).annotate({
     description: "Start the workflow asynchronously and notify this session when it finishes",
@@ -65,7 +65,7 @@ const Parameters = Schema.Struct({
   }),
   script: Schema.optional(Schema.String).annotate({
     description:
-      "Complete self-contained workflow SCRIPT for action=run — a literal `export const meta = {…}` followed by a free top-level body using the global hooks (agent/parallel/pipeline/phase/log). You author this directly; it runs as a background multi-agent workflow.",
+      "Complete self-contained workflow SCRIPT for action=run — a literal `export const meta = {…}` followed by a free top-level body using the global hooks (agent/parallel/pipeline/phase/log). You author this directly; it runs as a background multi-agent workflow. A full script is expected; do not switch to generate to avoid authoring it.",
   }),
   overwrite: Schema.optional(Schema.Boolean).annotate({ description: "Overwrite an existing workflow file" }),
   objective: Schema.optional(Schema.String).annotate({
@@ -87,8 +87,13 @@ type Metadata = Record<string, unknown>
 const DESCRIPTION = [
   "Author and run project workflows — multi-agent orchestrations — through one action-based tool.",
   "Do not use workflows by default. Use only when the user explicitly asks for a workflow or confirms multi-agent orchestration.",
+  "If the user asks for a workflow, default to multi-agent orchestration. Use several specialized agents, parallel tracks, staged pipelines, independent review, synthesis, or iteration. Do not wrap the task in a one-agent workflow unless the user explicitly asks for a single-step workflow.",
+  "NEVER set the `budget` parameter unless the user explicitly asks for a dollar/cost cap. Absence of a budget means unlimited; do not add one for token thrift or safety.",
+  "After a workflow run starts, times out, finishes, or sends a completion bubble, read the workflow source file that actually ran before interpreting the result or replying to the user. Use the `<path>` from the run summary, or inspect the run with view='all' if needed.",
+  "Workflow subagents run headlessly. Their prompts must not ask the user clarifying questions; they should choose reasonable assumptions and continue, or return `BLOCKED:` with exact missing information.",
   "",
   "PREFER action=run: you author a self-contained orchestration script and it runs as a background multi-agent workflow. This is the headline path — author the script yourself.",
+  "Do not treat authoring the script as too heavy. Write the script, run it, and fix gate/runtime errors like normal code.",
   "",
   ScriptPrompt.SCRIPT_AUTHORING_GUIDE,
   "",
@@ -237,11 +242,17 @@ function formatInspect(run: Workflow.Run, view: Schema.Schema.Type<typeof Inspec
   return [formatRunSummary(run), formatAgents(run, false), formatResult(run)].join("\n")
 }
 
+function readSourceInstruction(run?: Workflow.Run) {
+  return run?.definition?.path
+    ? `<instructions>Before interpreting this workflow run or replying to the user, read the workflow source file that actually ran: ${run.definition.path}</instructions>`
+    : "<instructions>Before interpreting this workflow run or replying to the user, inspect the run with view=\"all\" or read the workflow source file that actually ran.</instructions>"
+}
+
 function backgroundStarted(run: Workflow.Run) {
   return [
     `<workflow_run id="${run.id}" state="running">`,
     "<summary>Workflow started in background.</summary>",
-    "<instructions>You will be notified automatically when it finishes; do not poll unless the user asks for progress.</instructions>",
+    "<instructions>You will be notified automatically when it finishes; do not poll unless the user asks for progress. After it finishes, read the workflow source file that actually ran before replying.</instructions>",
     "</workflow_run>",
   ].join("\n")
 }
@@ -253,18 +264,22 @@ function backgroundMessage(run: Workflow.Run, state: "completed" | "error", text
     state === "completed" ? "<workflow_result>" : "<workflow_error>",
     text,
     state === "completed" ? "</workflow_result>" : "</workflow_error>",
+    readSourceInstruction(run),
     "</workflow_run>",
   ].join("\n")
 }
 
-function backgroundGenerateStarted(runId: string, workflow: string) {
+function backgroundGenerateStarted(runId: string, workflow: string, filepath?: string) {
   return [
     `<workflow_run id="${runId}" state="running">`,
     `<workflow>${workflow}</workflow>`,
+    filepath ? `<path>${filepath}</path>` : undefined,
     "<summary>Dynamic workflow generation and execution started in background.</summary>",
-    "<instructions>The workflow is being planned and will start automatically in the background. You will be notified when it completes.</instructions>",
+    "<instructions>The workflow is being planned and will start automatically in the background. You will be notified when it completes. After it finishes, read the workflow source file that actually ran before replying.</instructions>",
     "</workflow_run>",
-  ].join("\n")
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n")
 }
 
 // Compact, human-readable elapsed time for the completion summary ("12s",
@@ -301,6 +316,7 @@ function backgroundJobMessage(
     state === "completed" ? "<workflow_result>" : "<workflow_error>",
     text,
     state === "completed" ? "</workflow_result>" : "</workflow_error>",
+    "<instructions>Before interpreting this workflow run or replying to the user, inspect/read the workflow source file that actually ran.</instructions>",
     "</workflow_run>",
   ].join("\n")
 }
@@ -332,7 +348,9 @@ function deleteFileSafe(file: string) {
 }
 
 function terminalOutput(run: Workflow.Run) {
-  return [formatRunSummary(run), formatLogs(run), formatAgents(run, false), formatResult(run)].join("\n")
+  return [formatRunSummary(run), formatLogs(run), formatAgents(run, false), formatResult(run), readSourceInstruction(run)].join(
+    "\n",
+  )
 }
 
 function runFailure(run: Workflow.Run) {
@@ -786,7 +804,7 @@ export const WorkflowTool = Tool.define(
                   jobId: job.id,
                   timedOut: false,
                 },
-                output: backgroundGenerateStarted(runId, objectiveLabel),
+                output: backgroundGenerateStarted(runId, objectiveLabel, filepath),
               }
             }
 
@@ -972,7 +990,7 @@ export const WorkflowTool = Tool.define(
               return {
                 title: `Workflow started: ${displayName}`,
                 metadata: { runId, workflow: displayName, background: true, jobId: job.id, timedOut: false },
-                output: backgroundGenerateStarted(runId, displayName),
+                output: backgroundGenerateStarted(runId, displayName, filepath),
               }
             }
 

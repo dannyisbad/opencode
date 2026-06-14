@@ -36,6 +36,14 @@ import { MetaReader } from "./meta-reader"
 import { CodeTransform } from "./code-transform"
 import { isTransientError, parseModelString, type ModelDesc } from "./resilience"
 
+const HEADLESS_AGENT_INSTRUCTIONS = [
+  "HEADLESS WORKFLOW SUBAGENT RULES:",
+  "- You are running inside an automated workflow. Do not ask the user questions, request clarification, or end by asking what they prefer.",
+  "- If the task is ambiguous, choose a reasonable default, state the assumption in your result, and continue.",
+  "- If progress is truly impossible without missing user input, return `BLOCKED:` followed by the exact missing information. Do not ask conversationally.",
+  "- Complete the assigned subtask and return the best useful result you can.",
+].join("\n")
+
 // Branded id for a workflow run. Follows the repo's ID convention (cf. SessionID
 // / MessageID in `session/schema.ts`): a `job_`-prefixed string carrying a
 // nominal brand so a run id can never be confused with any other string at the
@@ -850,6 +858,13 @@ function projectConfigDir(ctx: { directory: string; worktree: string }) {
   return path.join(projectRoot(ctx), ".opencode")
 }
 
+const SYNTHESIZE_AGENT_TEXT_LIMIT = 12_000
+
+function clipSynthesisText(text: string) {
+  if (text.length <= SYNTHESIZE_AGENT_TEXT_LIMIT) return text
+  return `${text.slice(0, SYNTHESIZE_AGENT_TEXT_LIMIT)}\n\n[truncated ${text.length - SYNTHESIZE_AGENT_TEXT_LIMIT} characters from this agent output before synthesis]`
+}
+
 function createContext(input: {
   active: Active
   agent: (input: AgentInput) => Promise<{ data: unknown; text: string }>
@@ -974,7 +989,7 @@ function createContext(input: {
       checkpoint()
       const combinedText = options.agents
         .filter((a): a is { data: unknown; text: string } => typeof a === "object" && a !== null && "text" in a)
-        .map((a, i) => `### Agent ${i + 1}\n\n${a.text}`)
+        .map((a, i) => `### Agent ${i + 1}\n\n${clipSynthesisText(a.text)}`)
         .join("\n\n---\n\n")
       const prompt = [
         options.prompt ?? "Synthesize the following agent outputs into one coherent, comprehensive result.",
@@ -1453,7 +1468,7 @@ export const layer = Layer.effect(
                 model: modelInfo,
                 retries: 0,
                 format: agentInput.schema ? { type: "json_schema", schema: agentInput.schema } : undefined,
-                parts: [{ type: "text", text: agentInput.prompt }],
+                parts: [{ type: "text", text: `${HEADLESS_AGENT_INSTRUCTIONS}\n\n${agentInput.prompt}` }],
               })
               node.message_id = message.info.id
               if (message.info.role === "assistant") {

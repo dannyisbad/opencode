@@ -137,7 +137,13 @@ export const layer = Layer.effect(
             ? [
                 "Dynamic workflows are enabled and highly preferred. If the user mentions 'ultracode', 'workflow', or 'workflows', or asks to use a workflow, use dynamic workflows — never static/regular/legacy ones unless the user explicitly says STATIC or LEGACY with those exact words.",
                 "AUTHOR THE WORKFLOW YOURSELF: write the orchestration script inline and run it via the workflow tool with action='run' (the tool description documents the script shape and global hooks). This is the preferred path — you are the author. Use action='generate' (a separate planner model authors it) ONLY as a fallback if your own script fails the gate repeatedly or you cannot author one.",
+                "Writing a full workflow script is expected. Do not choose action='generate' because the script seems long, quoting seems tedious, or TypeScript feels heavy.",
                 "If your script fails — gate rejection or a runtime error — read the error, fix the script, and run it again, like debugging your own code.",
+                "A requested dynamic workflow should default to multi-agent orchestration. Use several specialized agents, parallel tracks, staged pipelines, independent review, synthesis, adversarial verification, or iteration. Do not make a one-agent workflow unless the user explicitly asks for a single-step workflow.",
+                "NEVER set a workflow budget unless the user explicitly asks for a dollar/cost cap. Do not invent budgets to save tokens or be conservative; omit the budget field for unlimited runs.",
+                "Do not use workflow agent schemas by default. Prefer plain text or explicit JSON-in-text instructions; use schema only when later workflow code truly requires validated fields and the model route supports it.",
+                "After a workflow run starts, times out, finishes, or sends a completion bubble, read the workflow source file that actually ran before interpreting the result or replying to the user.",
+                "Do not avoid useful fan-out, review, or synthesis solely to conserve tokens; optimize dynamic workflows for correctness and coverage. Still structure large fan-in as a synthesis tree so context stays useful.",
                 "Dynamic workflows can use: parallel fan-out, pipelines, synthesis, adversarial verification, iterative loops, and batch processing. They run through the native workflow engine with full observability (watch live with /workflows).",
               ].join("\n")
             : undefined,

@@ -71,7 +71,7 @@ export default workflow({
 
     ctx.setPhase("review")
     const reviews = await ctx.parallel([
-      () => ctx.agent({ agent: "plan", prompt: `Review for clarity:\n${draft.text}` }),
+      () => ctx.agent({ agent: "general", prompt: `Review for clarity:\n${draft.text}` }),
       () => ctx.agent({ agent: "general", prompt: `Review for missing risks:\n${draft.text}` }),
     ])
 
@@ -189,7 +189,7 @@ Use `ctx.agent` when a step should ask an OpenCode agent to produce an answer.
 
 ```ts
 const result = await ctx.agent({
-  agent: "plan",
+  agent: "general",
   prompt: "Review this migration plan for risks.",
 })
 
@@ -199,7 +199,7 @@ ctx.log(result.text)
 The returned value contains:
 
 - `text` - the model response as text.
-- `data` - the response payload. Currently this is the same text value unless structured output is added by the workflow runtime.
+- `data` - structured response data when the workflow requested a schema; otherwise it usually matches the text response.
 
 ---
 
@@ -209,7 +209,7 @@ Use `ctx.parallel` to run independent steps at the same time and wait for all of
 
 ```ts
 const results = await ctx.parallel([
-  () => ctx.agent({ agent: "plan", prompt: "Find architecture risks." }),
+  () => ctx.agent({ agent: "general", prompt: "Find architecture risks." }),
   () => ctx.agent({ agent: "general", prompt: "Find missing test coverage." }),
 ])
 ```
@@ -239,7 +239,7 @@ const results = await ctx.pipeline(
   },
   async (draft, topic) => {
     ctx.setPhase("review")
-    const review = await ctx.agent({ agent: "plan", prompt: `Review:\n${draft.text}` })
+    const review = await ctx.agent({ agent: "general", prompt: `Review:\n${draft.text}` })
     return { topic, review: review.text }
   },
 )
@@ -279,7 +279,7 @@ export default workflow({
 
   ctx.setPhase("parallel")
   const findings = await ctx.parallel([
-    () => ctx.agent({ agent: "plan", prompt: `Check risks:\n${brief.text}` }),
+    () => ctx.agent({ agent: "general", prompt: `Check risks:\n${brief.text}` }),
     () => ctx.agent({ agent: "general", prompt: `Check opportunities:\n${brief.text}` }),
   ])
 

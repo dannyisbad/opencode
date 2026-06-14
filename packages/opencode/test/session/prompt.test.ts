@@ -514,6 +514,42 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+it.instance("json_schema format exposes the structured tool without forcing required tool choice", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Structured",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "return structured data" }],
+      format: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+          properties: { value: { type: "string" } },
+          required: ["value"],
+        },
+      },
+    })
+    yield* llm.text("plain text instead of the structured tool")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const inputs = yield* llm.inputs
+    const request = inputs.at(-1) as Record<string, unknown>
+
+    expect(JSON.stringify(request.tools)).toContain("StructuredOutput")
+    expect(request.tool_choice).not.toBe("required")
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") expect(result.info.error?.name).toBe("StructuredOutputError")
+  }),
+)
+
 it.instance("loop surfaces content-filter finishes as session errors", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

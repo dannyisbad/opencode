@@ -1043,7 +1043,7 @@ export const ShellTool = Tool.define(
         const name = Shell.name(shell)
         const limits = yield* trunc.limits()
         const prompt = ShellPrompt.render(name, process.platform, limits, defaultTimeoutMs)
-        yield* Effect.logInfo("shell tool using shell", { shell })
+        yield* Effect.logDebug("shell tool using shell", { shell })
 
         return {
           description: prompt.description,

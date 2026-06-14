@@ -65,14 +65,8 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
   return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
 }
 
-export function retryable(error: Err, provider: string) {
-  // context overflow errors should not be retried
-  if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
+export function usageLimit(error: Err, provider: string): Retryable | undefined {
   if (SessionV1.APIError.isInstance(error)) {
-    const status = error.data.statusCode
-    // 5xx errors are transient server failures and should always be retried,
-    // even when the provider SDK doesn't explicitly mark them as retryable.
-    if (!error.data.isRetryable && !(status !== undefined && status >= 500)) return undefined
     if (error.data.responseBody?.includes("FreeUsageLimitError")) {
       return {
         message: GO_UPSELL_MESSAGE,
@@ -119,6 +113,19 @@ export function retryable(error: Err, provider: string) {
         },
       }
     }
+  }
+}
+
+export function retryable(error: Err, provider: string): Retryable | undefined {
+  // context overflow and explicit account/free usage caps are terminal. Retrying
+  // them just leaves the TUI in retry status until the cap resets.
+  if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
+  if (usageLimit(error, provider)) return undefined
+  if (SessionV1.APIError.isInstance(error)) {
+    const status = error.data.statusCode
+    // 5xx errors are transient server failures and should always be retried,
+    // even when the provider SDK doesn't explicitly mark them as retryable.
+    if (!error.data.isRetryable && !(status !== undefined && status >= 500)) return undefined
     return { message: error.data.message.includes("Overloaded") ? "Provider is overloaded" : error.data.message }
   }
 

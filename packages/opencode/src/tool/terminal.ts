@@ -277,7 +277,7 @@ export const TerminalTool = Tool.define(
     const toolScope = yield* Scope.Scope
 
     const shell = Shell.name(Shell.acceptable())
-    log.info("terminal tool using shell", { shell })
+    log.debug("terminal tool using shell", { shell })
 
     // --- InstanceState for persistent sessions ---
     const sessionState = yield* InstanceState.make<Map<string, SessionState>>(

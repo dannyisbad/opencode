@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test"
 import { codeWorkflowPlannerPrompt } from "@/workflow/code-prompt"
 import { gateCodeSource } from "@/workflow/code-gate"
+import { ScriptPrompt } from "@/workflow/script-prompt"
 
 describe("code-prompt", () => {
   test("every worked-example module in the prompt passes the static gate", () => {
@@ -20,8 +21,20 @@ describe("code-prompt", () => {
     expect(p).toContain("ctx.adversarial")
     expect(p).toContain("filter(Boolean)")
     expect(p).toContain("NEVER 'plan'")
+    expect(p).toContain("not token thrift")
+    expect(p).toContain("large fan-in")
+    expect(p).toContain("schema can fail")
     // does NOT carry ultracode's determinism rules (opencode has no journaled resume)
     expect(p).not.toContain("Date.now")
     expect(p).not.toContain("Math.random")
+  })
+
+  test("free-body script authoring guide warns about agentic fan-out pitfalls", () => {
+    const p = ScriptPrompt.SCRIPT_AUTHORING_GUIDE
+    expect(p).toContain("full autonomous OpenCode subagent")
+    expect(p).toContain("Do not be timid")
+    expect(p).toContain("large fan-in")
+    expect(p).toContain("schema can fail")
+    expect(p).toContain("must not create or edit files")
   })
 })

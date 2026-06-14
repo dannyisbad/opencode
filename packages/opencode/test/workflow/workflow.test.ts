@@ -135,6 +135,13 @@ function assistantReply(): SessionV1.WithParts {
   return { info: { role: "assistant" }, parts: [] } as unknown as SessionV1.WithParts
 }
 
+function workflowAgentTaskText(text: string) {
+  if (!text.startsWith("HEADLESS WORKFLOW SUBAGENT RULES:")) return text
+  const split = text.indexOf("\n\n")
+  if (split < 0) return text
+  return text.slice(split + 2)
+}
+
 // Test-Prompt-Ops, die das echte Session-Abort-Verhalten nachbilden:
 // - die initiale "Workflow started"-Nachricht (noReply) wird sofort beantwortet,
 //   damit start() zurückkehrt;
@@ -1323,7 +1330,7 @@ export async function run(args, ctx) {
           prompt: (input) =>
             Effect.gen(function* () {
               if (input.noReply) return assistantReply()
-              const text = input.parts.find((p) => p.type === "text")?.text ?? ""
+              const text = workflowAgentTaskText(input.parts.find((p) => p.type === "text")?.text ?? "")
               return {
                 info: {
                   id: "msg_test",
@@ -1383,7 +1390,7 @@ export async function run(args, ctx) {
           prompt: (input) =>
             Effect.gen(function* () {
               if (input.noReply) return assistantReply()
-              const text = input.parts.find((p) => p.type === "text")?.text ?? ""
+              const text = workflowAgentTaskText(input.parts.find((p) => p.type === "text")?.text ?? "")
               return {
                 info: {
                   id: "msg_test",
@@ -1495,7 +1502,7 @@ export async function run(args, ctx) {
                   }],
                 } as unknown as SessionV1.WithParts
               }
-              const text = input.parts.find((p) => p.type === "text")?.text ?? ""
+              const text = workflowAgentTaskText(input.parts.find((p) => p.type === "text")?.text ?? "")
               return {
                 info: {
                   id: "msg_test",
@@ -1811,6 +1818,112 @@ export async function run(args, ctx) {
     }),
   )
 
+  it.instance("synthesize clips oversized agent outputs before building the synthesis prompt", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "synthesis-clip",
+          `export const meta = { name: "synthesis-clip", phases: ["synthesis"] }
+export async function run(args, ctx) {
+  ctx.setPhase("synthesis")
+  const long = "A".repeat(20_000) + "TAIL_SHOULD_BE_CLIPPED"
+  const result = await ctx.synthesize({
+    agents: [{ data: null, text: long }],
+    prompt: "Summarize the huge input.",
+  })
+  return { result: result.text }
+}
+`,
+          "ts",
+        ),
+      )
+
+      const promptsReceived: string[] = []
+      const workflow = yield* Workflow.Service
+      const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+        prompt: (input) =>
+          Effect.gen(function* () {
+            if (input.noReply) return assistantReply()
+            const promptText = input.parts.find((p) => p.type === "text")?.text ?? ""
+            promptsReceived.push(promptText)
+            return {
+              info: {
+                id: "msg_synthesis_clip",
+                role: "assistant",
+                providerID: "test",
+                modelID: "test-model",
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              },
+              parts: [{ type: "text", text: "clipped summary" }],
+            } as unknown as SessionV1.WithParts
+          }),
+        cancel: () => Effect.void,
+      }
+
+      const run = yield* workflow.start({ name: "synthesis-clip", prompt: ops })
+      const done = yield* workflow.wait({ id: run.id })
+
+      expect(done.run?.status).toBe("completed")
+      const synthesisPrompt = promptsReceived.at(-1) ?? ""
+      expect(synthesisPrompt).toContain("[truncated")
+      expect(synthesisPrompt).not.toContain("TAIL_SHOULD_BE_CLIPPED")
+      expect(synthesisPrompt.length).toBeLessThan(14_000)
+    }),
+  )
+
+  it.instance("workflow agent prompts are wrapped with headless no-question instructions", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "headless-agent-prompt",
+          `export const meta = { name: "headless-agent-prompt", phases: ["run"] }
+export async function run(args, ctx) {
+  const result = await ctx.agent({ prompt: "Map the data. If unclear, decide a format." })
+  return { result: result.text }
+}
+`,
+          "ts",
+        ),
+      )
+
+      const promptsReceived: string[] = []
+      const workflow = yield* Workflow.Service
+      const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+        prompt: (input) =>
+          Effect.gen(function* () {
+            if (input.noReply) return assistantReply()
+            promptsReceived.push(input.parts.find((p) => p.type === "text")?.text ?? "")
+            return {
+              info: {
+                id: "msg_headless",
+                role: "assistant",
+                providerID: "test",
+                modelID: "test-model",
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              },
+              parts: [{ type: "text", text: "mapped" }],
+            } as unknown as SessionV1.WithParts
+          }),
+        cancel: () => Effect.void,
+      }
+
+      const run = yield* workflow.start({ name: "headless-agent-prompt", prompt: ops })
+      const done = yield* workflow.wait({ id: run.id })
+
+      expect(done.run?.status).toBe("completed")
+      expect(promptsReceived[0]).toContain("HEADLESS WORKFLOW SUBAGENT RULES")
+      expect(promptsReceived[0]).toContain("Do not ask the user questions")
+      expect(promptsReceived[0]).toContain("choose a reasonable default")
+      expect(promptsReceived[0]).toContain("Map the data. If unclear, decide a format.")
+    }),
+  )
+
   it.instance("agent coordination test: loop refinement with verifier feedback", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -1902,10 +2015,10 @@ export async function run(args, ctx) {
       // Verification of Quality Loop Coordination:
       
       // 1. Verify we looped because of the verifier feedback
-      expect(promptsReceived).toContain("improve draft based on feedback: Draft V1")
+      expect(promptsReceived.some((prompt) => prompt.includes("improve draft based on feedback: Draft V1"))).toBe(true)
       
       // 2. Verify that iteration 2 was run with Draft V2 and passed
-      expect(promptsReceived).toContain("Verify draft quality: Draft V2 with parameters")
+      expect(promptsReceived.some((prompt) => prompt.includes("Verify draft quality: Draft V2 with parameters"))).toBe(true)
       
       // 3. Verify that the loop exited on PASS and did not run the 3rd iteration
       expect(promptsReceived.filter(p => p.includes("improve draft")).length).toBe(1)
