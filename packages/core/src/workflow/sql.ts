@@ -39,10 +39,10 @@ export type WorkflowAgentRow = {
   id: string
   // Agent NODES only ever carry these three. The run-level `status` column below
   // is widened to also include "cancelled"/"interrupted", but those are RUN
-  // lifecycle states only: on cancel/interrupt the engine rewrites a still-running
-  // agent node to "failed" (with an explanatory error), and the orphan sweep
-  // touches only the run row, never the agents JSON. Keep this union in lockstep
-  // with the engine's `AgentRun` schema (asserted at compile time over there).
+  // lifecycle states only: on cancel/interrupt/orphan sweep the engine rewrites a
+  // still-running agent node to "failed" (or promotes a completed child session
+  // back to "completed"). Keep this union in lockstep with the engine's
+  // `AgentRun` schema (asserted at compile time over there).
   status: "running" | "completed" | "failed"
   started_at: number
   completed_at?: number

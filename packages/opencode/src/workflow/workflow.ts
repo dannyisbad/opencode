@@ -530,19 +530,63 @@ function persistInScope(
  * fresh instance in project B used to mark project A's genuinely-live runs as
  * interrupted.
  */
-function sweepOrphans(db: Database.Interface["db"], liveIds: ReadonlySet<string>, now: number, directory: string) {
-  return db
-    .update(WorkflowRunTable)
-    .set({ status: "interrupted", completed_at: now, time_updated: now })
-    .where(
-      and(
-        eq(WorkflowRunTable.status, "running"),
-        or(eq(WorkflowRunTable.directory, directory), isNull(WorkflowRunTable.directory)),
-        liveIds.size ? notInArray(WorkflowRunTable.id, [...liveIds]) : undefined,
-      ),
+function sweepOrphans(
+  db: Database.Interface["db"],
+  sessions: Session.Interface,
+  liveIds: ReadonlySet<string>,
+  now: number,
+  directory: string,
+) {
+  return Effect.gen(function* () {
+    const rows = yield* db
+      .select()
+      .from(WorkflowRunTable)
+      .where(
+        and(
+          eq(WorkflowRunTable.status, "running"),
+          or(eq(WorkflowRunTable.directory, directory), isNull(WorkflowRunTable.directory)),
+          liveIds.size ? notInArray(WorkflowRunTable.id, [...liveIds]) : undefined,
+        ),
+      )
+      .all()
+      .pipe(Effect.orDie)
+    yield* Effect.forEach(
+      rows,
+      (row) =>
+        Effect.gen(function* () {
+          const run = fromRow(row)
+          yield* settleRunningAgentsFromSessions(sessions, run, now)
+          for (const node of run.agents) {
+            if (node.status !== "running") continue
+            node.status = "failed"
+            node.completed_at = now
+            node.error ??= "Workflow interrupted before completion"
+          }
+          const logs = [
+            ...run.logs,
+            {
+              time: now,
+              phase: run.current_phase,
+              message: "Workflow interrupted before completion",
+            },
+          ]
+          yield* db
+            .update(WorkflowRunTable)
+            .set({
+              status: "interrupted",
+              completed_at: now,
+              time_updated: now,
+              agents: run.agents,
+              logs,
+              error: run.error ?? "Workflow interrupted before completion",
+            })
+            .where(eq(WorkflowRunTable.id, row.id))
+            .run()
+            .pipe(Effect.orDie)
+        }),
+      { concurrency: "unbounded", discard: true },
     )
-    .run()
-    .pipe(Effect.orDie, Effect.asVoid)
+  })
 }
 
 function errorText(error: unknown) {
@@ -637,6 +681,84 @@ function assistantText(message: SessionV1.WithParts) {
     .filter((part): part is SessionV1.TextPart => part.type === "text" && part.text.trim().length > 0)
     .map((part) => part.text)
     .join("\n")
+}
+
+function messageErrorText(error: NonNullable<SessionV1.Assistant["error"]>) {
+  return error.data && typeof error.data === "object" && "message" in error.data && typeof error.data.message === "string"
+    ? error.data.message
+    : "message" in error && typeof error.message === "string"
+      ? error.message
+      : JSON.stringify(error)
+}
+
+function applyAssistantTelemetry(node: AgentRun, assistants: SessionV1.Assistant[]) {
+  if (assistants.length === 0) return
+  node.cost = assistants.reduce((sum, info) => sum + info.cost, 0)
+  const totals = assistants.map((info) => info.tokens.total).filter((total) => total !== undefined)
+  node.tokens = assistants.reduce(
+    (acc, info) => ({
+      total: acc.total,
+      input: acc.input + info.tokens.input,
+      output: acc.output + info.tokens.output,
+      reasoning: acc.reasoning + info.tokens.reasoning,
+      cache: {
+        read: acc.cache.read + info.tokens.cache.read,
+        write: acc.cache.write + info.tokens.cache.write,
+      },
+    }),
+    {
+      total: totals.length > 0 ? totals.reduce((sum, total) => sum + total, 0) : undefined,
+      input: 0,
+      output: 0,
+      reasoning: 0,
+      cache: { read: 0, write: 0 },
+    } as NonNullable<AgentRun["tokens"]>,
+  )
+}
+
+function settleRunningAgentsFromSessions(sessions: Session.Interface, run: Run, completed_at: number) {
+  return Effect.forEach(
+    run.agents,
+    (node) =>
+      Effect.gen(function* () {
+        if (node.status !== "running" || !node.session_id) return
+        const sessionID = SessionID.make(node.session_id)
+        const match = yield* sessions
+          .findMessage(
+            sessionID,
+            (message) => {
+              if (message.info.role !== "assistant") return false
+              if (message.info.error) return true
+              if (message.info.structured !== undefined) return true
+              if (assistantText(message).trim().length === 0) return false
+              if (!message.info.time?.completed) return false
+              return !message.info.finish || !["tool-calls", "unknown"].includes(message.info.finish)
+            },
+          )
+          .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed({ _tag: "None" as const })))
+        if (match._tag === "None") return
+        const message = match.value
+        if (message.info.role !== "assistant") return
+        const all = yield* sessions
+          .messages({ sessionID })
+          .pipe(Effect.catchTag("NotFoundError", () => Effect.succeed([message])))
+        applyAssistantTelemetry(
+          node,
+          all.map((item) => item.info).filter((info): info is SessionV1.Assistant => info.role === "assistant"),
+        )
+        node.completed_at = message.info.time.completed ?? completed_at
+        node.message_id = message.info.id
+        node.model = `${message.info.providerID}/${message.info.modelID}`
+        node.output = message.info.structured !== undefined ? JSON.stringify(message.info.structured, null, 2) : assistantText(message)
+        if (!message.info.error) {
+          node.status = "completed"
+          return
+        }
+        node.status = "failed"
+        node.error = `Agent step failed: ${message.info.error.name || "UnknownError"}: ${messageErrorText(message.info.error)}`
+      }),
+    { concurrency: "unbounded", discard: true },
+  )
 }
 
 async function discover(directories: readonly string[]) {
@@ -1014,7 +1136,7 @@ export const layer = Layer.effect(
         // process, so sweep them to `interrupted` (honest orphan recovery on
         // start). Scoped to the project: another project's instance may be live
         // in a different process sharing this DB, and its running rows are real.
-        yield* sweepOrphans(db, new Set(), yield* Clock.currentTimeMillis, projectRoot(ictx))
+        yield* sweepOrphans(db, sessions, new Set(), yield* Clock.currentTimeMillis, projectRoot(ictx))
         return {
           runs,
           scope: yield* Scope.Scope,
@@ -1023,7 +1145,11 @@ export const layer = Layer.effect(
     )
 
     const readRuns = Effect.fn("Workflow.readRuns")(function* () {
-      const active = yield* SynchronizedRef.get((yield* InstanceState.get(state)).runs)
+      const inst = yield* InstanceState.get(state)
+      const active = yield* SynchronizedRef.get(inst.runs)
+      const ctx = yield* InstanceState.context
+      const root = projectRoot(ctx)
+      yield* sweepOrphans(db, sessions, new Set(active.keys()), yield* Clock.currentTimeMillis, root)
       // Scoped to this project: the DB is shared across every project this
       // binary touches, and an unscoped list leaked every project's runs into
       // every dashboard. Legacy pre-migration rows (NULL directory) are hidden
@@ -1031,7 +1157,7 @@ export const layer = Layer.effect(
       const rows = yield* db
         .select()
         .from(WorkflowRunTable)
-        .where(eq(WorkflowRunTable.directory, projectRoot(yield* InstanceState.context)))
+        .where(eq(WorkflowRunTable.directory, root))
         .orderBy(desc(WorkflowRunTable.started_at))
         .all()
         .pipe(Effect.orDie)
@@ -1114,6 +1240,7 @@ export const layer = Layer.effect(
       active.run.result = data?.result
       active.run.error = data?.error
       active.fiber = undefined
+      yield* settleRunningAgentsFromSessions(sessions, active.run, completed_at)
       // Close out any agent that is still marked running when the run ends as
       // cancelled/failed — its session was aborted (cancel) or the run unwound,
       // so it is no longer running.
@@ -1122,7 +1249,12 @@ export const layer = Layer.effect(
           if (node.status !== "running") continue
           node.status = "failed"
           node.completed_at = completed_at
-          node.error ??= status === "cancelled" ? "Cancelled" : "Workflow failed"
+          node.error ??=
+            status === "cancelled"
+              ? "Cancelled"
+              : status === "interrupted"
+                ? "Workflow interrupted before completion"
+                : "Workflow failed"
         }
       }
       yield* persistRun(db, active)
@@ -1318,6 +1450,7 @@ export const layer = Layer.effect(
                 permissionSessionID: agentInput.permissionSessionID ?? input.permissionSessionID,
                 agent: selected.name,
                 model: modelInfo,
+                retries: 0,
                 format: agentInput.schema ? { type: "json_schema", schema: agentInput.schema } : undefined,
                 parts: [{ type: "text", text: agentInput.prompt }],
               })
@@ -1335,32 +1468,11 @@ export const layer = Layer.effect(
                 // the returned `message` is itself one of those rows, so it is NOT
                 // added on top. A single-turn session ⇒ one assistant message ⇒ the
                 // sum equals that message (identical to the old single-message read).
-                const assistants = (yield* sessions.messages({ sessionID: session.id }).pipe(Effect.orDie))
-                  .map((m) => m.info)
-                  .filter((info) => info.role === "assistant")
-                node.cost = assistants.reduce((sum, info) => sum + info.cost, 0)
-                // Keep `total` optional exactly as the per-message tokens schema has
-                // it: only emit a summed total when at least one message carried one,
-                // so a single-message session stays byte-for-byte identical.
-                const totals = assistants.map((info) => info.tokens.total).filter((t) => t !== undefined)
-                node.tokens = assistants.reduce(
-                  (acc, info) => ({
-                    total: acc.total,
-                    input: acc.input + info.tokens.input,
-                    output: acc.output + info.tokens.output,
-                    reasoning: acc.reasoning + info.tokens.reasoning,
-                    cache: {
-                      read: acc.cache.read + info.tokens.cache.read,
-                      write: acc.cache.write + info.tokens.cache.write,
-                    },
-                  }),
-                  {
-                    total: totals.length > 0 ? totals.reduce((sum, t) => sum + t, 0) : undefined,
-                    input: 0,
-                    output: 0,
-                    reasoning: 0,
-                    cache: { read: 0, write: 0 },
-                  } as NonNullable<AgentRun["tokens"]>,
+                applyAssistantTelemetry(
+                  node,
+                  (yield* sessions.messages({ sessionID: session.id }).pipe(Effect.orDie))
+                    .map((m) => m.info)
+                    .filter((info): info is SessionV1.Assistant => info.role === "assistant"),
                 )
               }
               if (message.info.role === "assistant" && message.info.error) {
@@ -1476,12 +1588,22 @@ export const layer = Layer.effect(
             // error either way, so `isCancelled(squash)` catches both.
             finish(
               id,
-              active.cancelling || Cause.hasInterruptsOnly(cause) || isCancelled(Cause.squash(cause))
+              active.cancelling || isCancelled(Cause.squash(cause))
                 ? "cancelled"
-                : "failed",
+                : Cause.hasInterruptsOnly(cause)
+                  ? "interrupted"
+                  : "failed",
               { error: errorText(Cause.squash(cause)) },
             ),
         }),
+        Effect.ensuring(
+          Effect.gen(function* () {
+            if (active.run.status !== "running") return
+            yield* finish(id, active.cancelling ? "cancelled" : "interrupted", {
+              error: active.cancelling ? "Cancelled" : "Workflow interrupted before completion",
+            })
+          }),
+        ),
         Effect.asVoid,
         // Fork lazily (no `startImmediately`) so this returns the fiber handle
         // immediately. With `startImmediately` the runtime drives the run body
@@ -1505,7 +1627,7 @@ export const layer = Layer.effect(
       // `interrupted` and report that honestly instead of a misleading timeout.
       // Pass the live registry keys so genuinely-running siblings are untouched.
       if (!active) {
-        yield* sweepOrphans(db, new Set(live.keys()), yield* Clock.currentTimeMillis, projectRoot(yield* InstanceState.context))
+        yield* sweepOrphans(db, sessions, new Set(live.keys()), yield* Clock.currentTimeMillis, projectRoot(yield* InstanceState.context))
         return { run: yield* get(input.id), timedOut: false }
       }
       if (input.timeout === undefined) return { run: yield* Deferred.await(active.done), timedOut: false }
@@ -1525,10 +1647,11 @@ export const layer = Layer.effect(
     // and unblocks its promise so module.run can unwind and the fiber completes.
     // Only after both do we await the fiber.
     const abortRun = Effect.fn("Workflow.abortRun")(function* (active: Active) {
-      if (!active.fiber) return
+      const fiber = active.fiber
+      if (!fiber) return
       active.cancelling = true
       const scope = (yield* InstanceState.get(state)).scope
-      const interrupted = yield* Fiber.interrupt(active.fiber).pipe(Effect.forkIn(scope))
+      const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.forkIn(scope))
       const cancelSession = active.cancelSession
       if (cancelSession) {
         yield* Effect.forEach([...active.sessions], (sessionID) => cancelSession(SessionID.make(sessionID)), {
@@ -1537,7 +1660,7 @@ export const layer = Layer.effect(
         }).pipe(Effect.ignore)
       }
       yield* Fiber.await(interrupted).pipe(Effect.ignore)
-      yield* Fiber.await(active.fiber).pipe(Effect.ignore)
+      yield* Fiber.await(fiber).pipe(Effect.ignore)
     })
 
     const cancel: Interface["cancel"] = Effect.fn("Workflow.cancel")(function* (id) {
@@ -1569,7 +1692,7 @@ export const layer = Layer.effect(
 
     const sweep: Interface["sweep"] = Effect.fn("Workflow.sweep")(function* () {
       const live = yield* SynchronizedRef.get((yield* InstanceState.get(state)).runs)
-      yield* sweepOrphans(db, new Set(live.keys()), yield* Clock.currentTimeMillis, projectRoot(yield* InstanceState.context))
+      yield* sweepOrphans(db, sessions, new Set(live.keys()), yield* Clock.currentTimeMillis, projectRoot(yield* InstanceState.context))
     })
 
     return Service.of({ list, runs, get, start, wait, cancel, remove, sweep })

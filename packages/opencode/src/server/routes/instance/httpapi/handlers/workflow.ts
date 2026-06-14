@@ -17,6 +17,17 @@ function apiError(error: Workflow.InvalidError | Workflow.NotFoundError) {
   return new WorkflowApiError({ message: `Workflow not found: ${error.name}`, workflow: error.name })
 }
 
+function deleteFileSafe(file: string) {
+  return Effect.promise(() =>
+    Bun.file(file)
+      .delete()
+      .then(
+        () => undefined,
+        () => undefined,
+      ),
+  )
+}
+
 export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow", (handlers) =>
   Effect.gen(function* () {
     const workflow = yield* Workflow.Service
@@ -109,7 +120,7 @@ export const workflowHandlers = HttpApiBuilder.group(InstanceHttpApi, "workflow"
           // agents with the requested model, not just plan generation.
           model: generateModel,
         })
-        .pipe(Effect.mapError(apiError))
+        .pipe(Effect.tapError(() => deleteFileSafe(filepath)), Effect.mapError(apiError))
     })
 
     const cancel = Effect.fn("WorkflowHttpApi.cancel")(function* (ctx: { params: { id: Workflow.RunID } }) {

@@ -1348,6 +1348,7 @@ export const layer = Layer.effect(
               sessionID,
               model,
               backupModels,
+              retries: input.retries,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1690,6 +1691,7 @@ export const PromptInput = Schema.Struct({
   model: Schema.optional(ModelRef),
   agent: Schema.optional(Schema.String),
   noReply: Schema.optional(Schema.Boolean),
+  retries: Schema.optional(Schema.Number),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)).annotate({
     description:
       "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",
@@ -1711,6 +1713,7 @@ export type PromptInput = Schema.Schema.Type<typeof PromptInput>
 export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({
   sessionID: SessionID,
   permissionSessionID: Schema.optional(SessionID),
+  retries: Schema.optional(Schema.Number),
 }) {}
 
 export const ShellInput = Schema.Struct({

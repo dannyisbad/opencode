@@ -58,6 +58,7 @@ type Input = {
   sessionID: SessionID
   model: Provider.Model
   backupModels?: Provider.Model[]
+  retries?: number
 }
 
 export interface Interface {
@@ -1126,7 +1127,7 @@ export const layer = Layer.effect(
             if (ctx.blocked || ctx.assistantMessage.error) return "stop" as const
             return "continue" as const
           }
-          yield* runStream(streamInput, input.model.providerID).pipe(Effect.catch(halt))
+          yield* runStream(streamInput, input.model.providerID, input.retries).pipe(Effect.catch(halt))
           if (ctx.needsCompaction) return "compact"
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"

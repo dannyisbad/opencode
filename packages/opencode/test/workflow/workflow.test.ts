@@ -1,13 +1,14 @@
 import { describe, expect } from "bun:test"
 import { Workflow } from "@/workflow/workflow"
 import type { SessionPrompt } from "@/session/prompt"
+import { SessionID } from "@/session/schema"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
-import { WorkflowRunTable } from "@opencode-ai/core/workflow/sql"
-import { MessageTable } from "@opencode-ai/core/session/sql"
-import { MessageID } from "@opencode-ai/core/v1/session"
+import { WorkflowRunTable, type WorkflowAgentRow } from "@opencode-ai/core/workflow/sql"
+import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { MessageID, PartID } from "@opencode-ai/core/v1/session"
 import { eq } from "drizzle-orm"
-import { TestInstance } from "../fixture/fixture"
+import { requireInstance, TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { Deferred, Effect, Layer } from "effect"
 import path from "path"
@@ -21,7 +22,7 @@ const HELLO_FIXTURE = "hello"
 // Seeds a workflow_run row in status="running" with NO live registry entry,
 // the exact shape an orphaned (crashed/restarted) run leaves behind. `directory`
 // scopes the row to a project: omitted = legacy pre-migration row (NULL).
-function seedRunningRow(id: string, directory?: string) {
+function seedRunningRow(id: string, directory?: string, agents: WorkflowAgentRow[] = []) {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
     yield* db
@@ -33,7 +34,7 @@ function seedRunningRow(id: string, directory?: string) {
         status: "running",
         started_at: Date.now(),
         logs: [],
-        agents: [],
+        agents,
       })
       .run()
       .pipe(Effect.orDie)
@@ -50,6 +51,28 @@ function fetchRunRow(id: string) {
       .get()
       .pipe(Effect.orDie)
     return row ?? (yield* Effect.fail(new Error(`row ${id} not found`)))
+  })
+}
+
+function seedSession(id: SessionID) {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    const instance = yield* requireInstance
+    const now = Date.now()
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id,
+        project_id: instance.project.id,
+        slug: id,
+        directory: instance.directory,
+        title: "completed child",
+        version: "0.0.0-test",
+        time_created: now,
+        time_updated: now,
+      })
+      .run()
+      .pipe(Effect.orDie)
   })
 }
 
@@ -202,12 +225,15 @@ function persistTurns(db: Database.Interface["db"], sessionID: string, turns: As
     let last: SessionV1.WithParts | undefined
     for (const turn of turns) {
       const id = MessageID.ascending()
+      const now = Date.now()
       const data: Record<string, unknown> = {
         role: "assistant",
         providerID: "test",
         modelID: "test-model",
+        finish: "stop",
         cost: turn.cost,
         tokens: turn.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: now, completed: now },
         ...("structured" in turn ? { structured: turn.structured } : {}),
         ...(turn.error ? { error: turn.error } : {}),
       }
@@ -216,10 +242,23 @@ function persistTurns(db: Database.Interface["db"], sessionID: string, turns: As
         .values({
           id,
           session_id: sessionID,
-          time_created: Date.now(),
-          time_updated: Date.now(),
+          time_created: now,
+          time_updated: now,
           data,
         } as unknown as typeof MessageTable.$inferInsert)
+        .run()
+        .pipe(Effect.orDie)
+      const partID = PartID.ascending()
+      yield* db
+        .insert(PartTable)
+        .values({
+          id: partID,
+          message_id: id,
+          session_id: sessionID,
+          time_created: now,
+          time_updated: now,
+          data: { type: "text", text: "ok" },
+        } as unknown as typeof PartTable.$inferInsert)
         .run()
         .pipe(Effect.orDie)
       last = { info: { id, sessionID, ...data }, parts: [{ type: "text", text: "ok" }] } as unknown as SessionV1.WithParts
@@ -625,6 +664,50 @@ export async function run(args, ctx) { ctx.setPhase("run"); ctx.log("running"); 
     }),
   )
 
+  it.instance("workflow agent prompts cap session retries", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        writeWorkflow(
+          test.directory,
+          "retry-cap",
+          `export const meta = { name: "retry-cap", phases: ["agent"] }
+export async function run(args, ctx) {
+  ctx.setPhase("agent")
+  const result = await ctx.agent({ prompt: "reply" })
+  return result.text
+}
+`,
+        ),
+      )
+      const workflow = yield* Workflow.Service
+      const retries: Array<number | undefined> = []
+      const ops: { prompt: SessionPrompt.Interface["prompt"]; cancel: SessionPrompt.Interface["cancel"] } = {
+        prompt: (input) =>
+          Effect.gen(function* () {
+            if (input.noReply) return assistantReply()
+            retries.push(input.retries)
+            return {
+              info: {
+                role: "assistant",
+                providerID: "test",
+                modelID: "test-model",
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              },
+              parts: [{ type: "text", text: "ok" }],
+            } as unknown as SessionV1.WithParts
+          }),
+        cancel: () => Effect.void,
+      }
+
+      const run = yield* workflow.start({ name: "retry-cap", prompt: ops })
+      const done = yield* workflow.wait({ id: run.id })
+      expect(done.run?.status).toBe("completed")
+      expect(retries).toEqual([0])
+    }),
+  )
+
   it.instance("preserves temporary workflow source in run definition", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -780,6 +863,64 @@ return { sum: xs.reduce((a, b) => a + b, 0), arg: args.value }
       const row = yield* fetchRunRow(orphanId)
       expect(row.status).toBe("interrupted")
       expect(row.completed_at).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("runs() sweeps orphaned rows and closes running agent nodes", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const workflow = yield* Workflow.Service
+      const orphanId = Workflow.RunID.make("job_orphan_runs_agents")
+      yield* seedRunningRow(orphanId, test.directory, [
+        {
+          id: "1",
+          status: "running",
+          started_at: Date.now(),
+          prompt: "stale agent",
+          session_id: "ses_stale_agent",
+        },
+      ])
+
+      const runs = yield* workflow.runs()
+      const run = runs.find((item) => item.id === orphanId)
+      expect(run?.status).toBe("interrupted")
+      expect(run?.agents[0]?.status).toBe("failed")
+      expect(run?.agents[0]?.completed_at).toBeGreaterThan(0)
+      expect(run?.agents[0]?.error).toContain("interrupted")
+    }),
+  )
+
+  it.instance("orphan sweep promotes completed child sessions before interrupting the run", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const workflow = yield* Workflow.Service
+      const { db } = yield* Database.Service
+      const orphanId = Workflow.RunID.make("job_orphan_promote_child")
+      const childSessionID = SessionID.make("ses_completed_agent")
+      yield* seedSession(childSessionID)
+      yield* persistTurns(db, childSessionID, [
+        {
+          cost: 0.25,
+          tokens: { total: 11, input: 5, output: 6, reasoning: 0, cache: { read: 1, write: 2 } },
+        },
+      ])
+      yield* seedRunningRow(orphanId, test.directory, [
+        {
+          id: "1",
+          status: "running",
+          started_at: Date.now(),
+          prompt: "completed agent",
+          session_id: childSessionID,
+        },
+      ])
+
+      const runs = yield* workflow.runs()
+      const run = runs.find((item) => item.id === orphanId)
+      expect(run?.status).toBe("interrupted")
+      expect(run?.agents[0]?.status).toBe("completed")
+      expect(run?.agents[0]?.output).toBe("ok")
+      expect(run?.agents[0]?.cost).toBe(0.25)
+      expect(run?.agents[0]?.tokens?.input).toBe(5)
     }),
   )
 

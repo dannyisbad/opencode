@@ -320,6 +320,17 @@ function projectRoot(instance: { directory: string; worktree: string }) {
   return instance.worktree === "/" ? instance.directory : instance.worktree
 }
 
+function deleteFileSafe(file: string) {
+  return Effect.promise(() =>
+    Bun.file(file)
+      .delete()
+      .then(
+        () => undefined,
+        () => undefined,
+      ),
+  )
+}
+
 function terminalOutput(run: Workflow.Run) {
   return [formatRunSummary(run), formatLogs(run), formatAgents(run, false), formatResult(run)].join("\n")
 }
@@ -737,7 +748,7 @@ export const WorkflowTool = Tool.define(
                         temporary: true,
                         model: generateModel,
                       })
-                      .pipe(Effect.mapError(workflowError))
+                      .pipe(Effect.tapError(() => deleteFileSafe(filepath)), Effect.mapError(workflowError))
 
                     const waited = yield* waitForWorkflow(workflow, run)
                     workflowDurationMs =
@@ -824,7 +835,7 @@ export const WorkflowTool = Tool.define(
                 temporary: true,
                 model: generateModel,
               })
-              .pipe(Effect.mapError(workflowError))
+              .pipe(Effect.tapError(() => deleteFileSafe(filepath)), Effect.mapError(workflowError))
 
             yield* ctx.metadata({
               title: run.definition?.meta.name ?? run.workflow,
@@ -920,7 +931,7 @@ export const WorkflowTool = Tool.define(
                     temporary: true,
                     model: runModel,
                   })
-                  .pipe(Effect.mapError(workflowError))
+                  .pipe(Effect.tapError(() => deleteFileSafe(filepath)), Effect.mapError(workflowError))
               })
 
             if (params.background !== false) {

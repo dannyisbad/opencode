@@ -417,6 +417,31 @@ return "done"
     ),
   )
 
+  it.live("run: cleans up the temporary .dynamic file when start fails after write", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => enableDynamicWorkflows(dir))
+        const tool = yield* workflowTool()
+        const recorder = requestRecorder()
+        const script = `export const meta = { name: "ImportBoom" } as const
+throw new Error("load-boom-789")
+export async function run() { return "unreachable" }
+`
+        const exit = yield* Effect.exit(tool.execute({ action: "run", script, background: false }, recorder.ctx))
+        expect(Exit.isFailure(exit)).toBe(true)
+
+        const dynamicDir = path.join(dir, ".opencode", "workflows", ".dynamic")
+        const leftovers = yield* Effect.promise(() =>
+          fs.readdir(dynamicDir).then(
+            (files) => files.filter((f) => f.endsWith(".ts")),
+            () => [] as string[],
+          ),
+        )
+        expect(leftovers).toEqual([])
+      }),
+    ),
+  )
+
   it.live("run: background returns a run id that wait can resolve", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
